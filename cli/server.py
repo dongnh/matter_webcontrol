@@ -103,6 +103,23 @@ async def serve_sensors_api(request):
     
     return web.json_response(sensors_data)
 
+async def serve_commission_api(request):
+    logging.info("--- Received HTTP GET request at /api/commission ---")
+    if not global_client:
+         return web.json_response({"error": "Server not ready"}, status=503)
+
+    # Retrieve setup payload from query string
+    setup_code = request.query.get('code')
+    if not setup_code:
+        return web.json_response({"error": "Missing setup code"}, status=400)
+
+    try:
+        # Send commission command to Matter server
+        await global_client.send_command("commission_with_code", {"code": setup_code})
+        return web.json_response({"status": "success", "code": setup_code})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
@@ -120,6 +137,7 @@ def main():
     # Route Registration
     app.router.add_get('/api/lights', serve_lighting_api)
     app.router.add_get('/api/sensors', serve_sensors_api)
+    app.router.add_get('/api/register', serve_commission_api)
     
     logging.info(f"Bootstrapping Web server on port {web_port}, Matter server on port {MATTER_PORT}...")
     web.run_app(app, host='0.0.0.0', port=web_port)

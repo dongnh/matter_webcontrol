@@ -37,3 +37,11 @@ Start the system by typing the executable command `matter-srv`. You can use the 
 * **Method:** `GET`
 * **Description:** Gets a flattened list of all sensor readings on the local Matter network. Each reading is separated into its own object containing a composite ID (Node, Endpoint, and Sensor Name), the sensor name, and the raw integer value.
 * **Example:** `http://localhost:8080/api/sensors`
+
+### Commission a new Matter device
+
+* **URL:** `/api/register`
+* **Method:** `GET`
+* **Description:** Initiates the commissioning process for a new device on the local Matter network using the provided setup payload code.
+* **Parameters:** `code` (string) - The Matter setup payload code (e.g., starting with `MT:`).
+* **Example:** `http://localhost:8080/api/register?code=MT:Y.ABCDEFG123456789`
