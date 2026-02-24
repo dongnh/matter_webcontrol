@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matter-web-controller"
+version = "0.1.0"
+description = "Using websocket matter server to query/control matter-enabled lights/sensors via a HTTP GET interface."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp",
+    "home-assistant-chip-core",
+    "home-assistant-chip-clusters",
+    "cryptography",
+    "python-matter-server",
+    "zeroconf"
+]
+
+[project.scripts]
+yeelight-srv = "cli.server:main"
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
