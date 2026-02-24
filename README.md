@@ -12,7 +12,7 @@ The system separates background tasks and simplifies network rules to make it ea
 
 ## Requirements
 
-You need Python 3.10 or newer.
+Python 3.12 or newer.
 
 ## Installation
 
@@ -20,7 +20,7 @@ Create a virtual environment and install the package using your package manager.
 
 ## How to Run
 
-Start the system by typing the executable command `matter-server-start`. You can use the `--port` parameter to set the web server port. The default is 8080. The background Matter server will automatically use the next port number.
+Start the system by typing the executable command `matter-srv`. You can use the `--port` parameter to set the web server port. The default is 8080. The background Matter server will automatically use the next port number.
 
 ## API Endpoints
 
