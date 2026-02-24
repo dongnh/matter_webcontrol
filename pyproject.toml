@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matter-web-controller"
-version = "0.1.0"
+version = "0.2.0"
 description = "Using websocket matter server to query/control matter-enabled lights/sensors via a HTTP GET interface."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-yeelight-srv = "cli.server:main"
+matter-srv = "cli.server:main"
 
 [tool.isort]
 profile = "black"
