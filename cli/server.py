@@ -14,6 +14,17 @@ global_listen_task = None
 MATTER_PORT = 5580
 MATTER_SERVER_URL = ""
 
+# Standard Matter Sensor Clusters Mapping
+# Format: Cluster_ID: ("Sensor Name", Attribute_ID, Scale_Factor)
+SENSOR_CLUSTERS = {
+    1024: ("illuminance", 0, 1),
+    1026: ("temperature", 0, 100),
+    1027: ("pressure", 0, 10),
+    1029: ("humidity", 0, 100),
+    1030: ("occupancy", 0, 1),
+    69: ("contact", 0, 1),
+}
+
 async def init_servers(app):
     global global_session, global_client, global_matter_process, global_listen_task
     
@@ -26,7 +37,7 @@ async def init_servers(app):
     
     await asyncio.sleep(4.0)
     
-    logging.info("2. Establishing client connection (ClientSession)...")
+    logging.info("2. Establishing client connection...")
     global_session = ClientSession()
     global_client = MatterClient(MATTER_SERVER_URL, global_session)
     
@@ -34,7 +45,7 @@ async def init_servers(app):
     global_listen_task = asyncio.create_task(global_client.start_listening())
     
     await asyncio.sleep(2.0)
-    logging.info("4. DONE: Web server is ready to accept HTTP requests!")
+    logging.info("4. DONE: Web server is ready.")
 
 async def close_servers(app):
     logging.info("Executing resource cleanup procedures...")
@@ -53,9 +64,8 @@ async def serve_lighting_api(request):
          return web.json_response({"error": "Server not ready"}, status=503)
 
     nodes = global_client.get_nodes()
-    logging.info(f"DONE: Retrieved data for {len(nodes)} network nodes.")
-
     lighting_devices = []
+    
     for node in nodes:
         for endpoint_id, endpoint in node.endpoints.items():
             if 6 in endpoint.clusters:
@@ -70,9 +80,32 @@ async def serve_lighting_api(request):
     
     return web.json_response(lighting_devices)
 
+async def serve_sensors_api(request):
+    logging.info("--- Received HTTP GET request at /api/sensors ---")
+    if not global_client:
+         return web.json_response({"error": "Server not ready"}, status=503)
+
+    nodes = global_client.get_nodes()
+    sensors_data = []
+
+    for node in nodes:
+        for endpoint_id, endpoint in node.endpoints.items():
+            # Extract each sensor capability as a standalone entity
+            for cluster_id, (sensor_name, attr_id, scale_factor) in SENSOR_CLUSTERS.items():
+                if cluster_id in endpoint.clusters:
+                    val = node.get_attribute_value(endpoint_id, cluster_id, attr_id)
+                    if val is not None:
+                        sensors_data.append({
+                            "id": f"Node {node.node_id} - EP {endpoint_id} - {sensor_name}",
+                            "name": sensor_name,
+                            "value": int(val)
+                        })
+    
+    return web.json_response(sensors_data)
+
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
-    parser.add_argument("--port", type=int, default=8080, help="Web server port (Matter port will be port + 1)")
+    parser.add_argument("--port", type=int, default=8080, help="Web server port")
     args = parser.parse_args()
 
     web_port = args.port
@@ -83,7 +116,10 @@ def main():
     app = web.Application()
     app.on_startup.append(init_servers)
     app.on_cleanup.append(close_servers)
+    
+    # Route Registration
     app.router.add_get('/api/lights', serve_lighting_api)
+    app.router.add_get('/api/sensors', serve_sensors_api)
     
     logging.info(f"Bootstrapping Web server on port {web_port}, Matter server on port {MATTER_PORT}...")
     web.run_app(app, host='0.0.0.0', port=web_port)

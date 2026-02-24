@@ -30,3 +30,10 @@ Start the system by typing the executable command `matter-server-start`. You can
 * **Method:** `GET`
 * **Description:** Gets a list of all devices that have lighting features on the local Matter network. The data includes the Node ID, Endpoint ID, power state, and current brightness level.
 * **Example:** `http://localhost:8080/api/lights`
+
+### Get sensor device status
+
+* **URL:** `/api/sensors`
+* **Method:** `GET`
+* **Description:** Gets a flattened list of all sensor readings on the local Matter network. Each reading is separated into its own object containing a composite ID (Node, Endpoint, and Sensor Name), the sensor name, and the raw integer value.
+* **Example:** `http://localhost:8080/api/sensors`
