@@ -13,7 +13,7 @@ dependencies = [
     "home-assistant-chip-core",
     "home-assistant-chip-clusters",
     "cryptography",
-    atomicwrites,
+    "atomicwrites",
     "python-matter-server",
     "zeroconf"
 ]
