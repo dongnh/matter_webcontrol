@@ -529,6 +529,89 @@ async def serve_callback_api(request, bridge):
     
     return web.json_response({"status": "success", "id": resolved_id, "script": script_path})    
 
+@with_bridge
+async def serve_script_api(request, bridge):
+    """Serves an HTML form to edit and register a bash script, auto-generating the script path via timestamp."""
+    device_id = request.query.get('id', '')
+
+    if not device_id:
+        return web.Response(text="Missing device ID parameter in URL (?id=...)", status=400)
+
+    resolved_id = bridge.resolve_id(device_id)
+
+    if request.method == 'GET':
+        content = "#!/bin/bash\n\n# Add your script logic here\n"
+        
+        # Hydrate text area with existing callback content if available
+        existing_script = bridge.occupancy_callbacks.get(resolved_id)
+        if existing_script and os.path.isfile(existing_script):
+            try:
+                with open(existing_script, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except Exception:
+                pass
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Edit Bash Script</title>
+            <style>
+                body {{ font-family: sans-serif; padding: 20px; }}
+                textarea {{ width: 100%; max-width: 600px; padding: 10px; font-family: monospace; }}
+                input[type="submit"] {{ padding: 10px 20px; cursor: pointer; }}
+                .info {{ color: #555; margin-bottom: 15px; font-weight: bold; }}
+            </style>
+        </head>
+        <body>
+            <h2>Edit Callback Script</h2>
+            <div class="info">Device ID: {resolved_id}</div>
+            <form method="POST" action="/api/script?id={resolved_id}">
+                <textarea name="content" rows="15" required>{content}</textarea><br><br>
+                <input type="submit" value="Save and Register">
+            </form>
+        </body>
+        </html>
+        """
+        return web.Response(text=html, content_type='text/html')
+
+    elif request.method == 'POST':
+        data = await request.post()
+        content = data.get('content')
+
+        if content is None:
+            return web.json_response({"error": "Missing script content parameters."}, status=400)
+
+        # Autogenerate execution path utilizing Unix epoch format for uniqueness
+        timestamp = int(time.time())
+        script_dir = "./scripts"
+        script_path = f"{script_dir}/callback_{resolved_id}_{timestamp}.sh"
+
+        try:
+            os.makedirs(script_dir, exist_ok=True)
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write(content.replace('\r\n', '\n'))
+            os.chmod(script_path, 0o755)
+        except Exception as e:
+            return web.Response(text=f"Failed to save script: {e}", status=500)
+
+        bridge.occupancy_callbacks[resolved_id] = script_path
+        bridge._save_callbacks()
+
+        success_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Success</title></head>
+        <body>
+            <h2>Script saved and registered successfully.</h2>
+            <p>Device: {resolved_id}</p>
+            <p>Generated Path: {script_path}</p>
+            <a href="/api/script?id={resolved_id}">Return to Editor</a>
+        </body>
+        </html>
+        """
+        return web.Response(text=success_html, content_type='text/html')
+
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
@@ -552,6 +635,8 @@ def main():
     app.router.add_get('/api/name', serve_name_api)
     app.router.add_post('/api/name', serve_name_api)
     app.router.add_get('/api/callback', serve_callback_api)
+    app.router.add_get('/api/script', serve_script_api)
+    app.router.add_post('/api/script', serve_script_api)
     
     web.run_app(app, host='0.0.0.0', port=args.port)
 

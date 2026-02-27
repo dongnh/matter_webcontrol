@@ -30,7 +30,7 @@ Start the system by typing the executable command `matter-srv`. You can use the 
 
 * **URL:** `/api/devices`
 * **Method:** `GET`
-* **Description:** Retrieves the complete list of all devices, their assigned names, and raw states directly from the local cache. 
+* **Description:** Retrieves the complete list of all devices, their assigned names, and raw states directly from the local cache.
 * **Example:** `http://localhost:8080/api/devices`
 
 ### Get lighting device status
@@ -70,7 +70,7 @@ Start the system by typing the executable command `matter-srv`. You can use the 
 
 * **URL:** `/api/register`
 * **Method:** `GET`
-* **Description:** Initiates the commissioning process for a new device on the local network. 
+* **Description:** Initiates the commissioning process for a new device on the local network.
 * **Parameters:**
   * `code` (string, required): The Matter setup payload code.
   * `ip` (string, optional): The IP address of the device for direct network commissioning.
@@ -81,7 +81,7 @@ Start the system by typing the executable command `matter-srv`. You can use the 
 
 * **URL:** `/api/set`
 * **Method:** `GET` or `POST`
-* **Description:** Controls the brightness and color temperature of a specific lighting device. 
+* **Description:** Controls the brightness and color temperature of a specific lighting device.
 * **Parameters / JSON Body:**
   * `id` (string, required): The standardized ID or assigned name (e.g., `dev_1_8` or `Living Room Light`).
   * `brightness` (float, optional): The desired brightness level from 0.0 to 1.0. Setting to 0.0 powers off the device.
@@ -97,3 +97,14 @@ Start the system by typing the executable command `matter-srv`. You can use the 
   * `id` (string, required): The standardized ID or assigned name of the sensor.
   * `script_path` (string, required): The absolute path to the bash script file.
 * **Example (POST):** `curl -X POST -H "Content-Type: application/json" -d '{"id": "LivingRoomSensor", "script_path": "/Users/admin/scripts/alert.sh"}' http://localhost:8080/api/callback`
+
+### Create and register an occupancy bash script
+
+* **URL:** `/api/script`
+* **Method:** `GET` or `POST`
+* **Description:** Serves an HTML form to write a bash script. Submitting the form saves the script content to an auto-generated file path utilizing a timestamp and registers it to the device's occupancy callback.
+* **Parameters:**
+  * `id` (string, required): The standardized ID or assigned name of the sensor.
+* **Form Body (POST):**
+  * `content` (string, required): The bash script content to be saved and executed.
+* **Example:** `http://localhost:8080/api/script?id=LivingRoomSensor`
