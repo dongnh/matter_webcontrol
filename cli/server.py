@@ -5,6 +5,7 @@ import json
 import os
 import time
 import datetime
+import subprocess
 from aiohttp import web, ClientSession
 from matter_server.client.client import MatterClient
 from matter_server.common.models import EventType
@@ -48,6 +49,11 @@ class MatterBridgeServer:
         self.names_cache_file = "names_cache.json"
         self.device_names = {}
         self._load_names_cache()
+
+        # Initialize and hydrate callback registry
+        self.callbacks_file = "callbacks_cache.json"
+        self.occupancy_callbacks = {}
+        self._load_callbacks()
 
     def _load_device_cache(self):
         """Loads device states from the local file during initialization."""
@@ -103,6 +109,23 @@ class MatterBridgeServer:
             if identifier in names:
                 return dev_id
         return identifier
+    
+    def _load_callbacks(self):
+        """Loads registered bash script callbacks from cache file."""
+        if os.path.exists(self.callbacks_file):
+            try:
+                with open(self.callbacks_file, "r", encoding="utf-8") as file:
+                    self.occupancy_callbacks = json.load(file)
+            except Exception as e:
+                logging.error(f"Failed to load callbacks cache: {e}")
+
+    def _save_callbacks(self):
+        """Persists registered bash script callbacks to cache file."""
+        try:
+            with open(self.callbacks_file, "w", encoding="utf-8") as file:
+                json.dump(self.occupancy_callbacks, file, indent=4)
+        except Exception as e:
+            logging.error(f"Failed to save callbacks cache: {e}")
 
     async def start_process(self):
         """Launches the internal Matter Server subprocess."""
@@ -165,6 +188,7 @@ class MatterBridgeServer:
             return
 
         occupancy_updated = False
+        triggered_callbacks = []
 
         for node in self.client.get_nodes():
             for endpoint_id, endpoint in node.endpoints.items():
@@ -187,10 +211,17 @@ class MatterBridgeServer:
                         if val is not None:
                             states[sensor_name] = int(val)
                             
-                            # Log occupancy timestamps
+                            # Log occupancy timestamps and queue callback
                             if sensor_name == "occupancy" and int(val) == 1:
-                                self.occupancy_history[device_id] = int(time.time())
-                                occupancy_updated = True
+                                prev_device = next((d for d in self.cached_devices if d["id"] == device_id), None)
+                                prev_occupancy = prev_device.get("states", {}).get("occupancy", 0) if prev_device else 0
+                                
+                                if prev_occupancy == 0:
+                                    self.occupancy_history[device_id] = int(time.time())
+                                    occupancy_updated = True
+                                    
+                                    if device_id in self.occupancy_callbacks:
+                                        triggered_callbacks.append(self.occupancy_callbacks[device_id])
 
                 devices.append({
                     "id": device_id,
@@ -209,6 +240,13 @@ class MatterBridgeServer:
 
         if occupancy_updated:
             self._save_occupancy_history()
+
+        # Execute registered bash scripts subsequent to cache persistence
+        for script_path in triggered_callbacks:
+            if os.path.exists(script_path):
+                subprocess.Popen(["bash", script_path])
+            else:
+                logging.error(f"Callback script missing: {script_path}")
 
 
 # --- Decorators ---
@@ -305,7 +343,7 @@ async def serve_lighting_api(request, bridge):
 
 @with_bridge
 async def serve_sensors_api(request, bridge):
-    """Retrieves aggregated sensor states and formats occupancy history."""
+    """Retrieves aggregated sensor states, formats occupancy history, and includes registered callbacks."""
     sensors_data = []
     sensor_keys = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
 
@@ -323,6 +361,10 @@ async def serve_sensors_api(request, bridge):
                 if last_active:
                     readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
                     sensor_payload["occupancy_last_active"] = readable_time
+                
+                # Append the registered callback script path if it exists in the registry
+                if device["id"] in bridge.occupancy_callbacks:
+                    sensor_payload["occupancy_callback"] = bridge.occupancy_callbacks[device["id"]]
 
             sensors_data.append({
                 "id": device["id"],
@@ -334,7 +376,7 @@ async def serve_sensors_api(request, bridge):
 
 @with_bridge
 async def serve_single_sensor_api(request, bridge):
-    """Retrieves state for a specific sensor ID."""
+    """Retrieves state and callback configuration for a specific sensor ID."""
     device_id = request.query.get('id')
     if not device_id:
         return web.json_response({"error": "Missing sensor id parameter"}, status=400)
@@ -357,6 +399,10 @@ async def serve_single_sensor_api(request, bridge):
                     if last_active:
                         readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
                         sensor_payload["occupancy_last_active"] = readable_time
+
+                    # Append the registered callback script path if it exists in the registry
+                    if resolved_id in bridge.occupancy_callbacks:
+                        sensor_payload["occupancy_callback"] = bridge.occupancy_callbacks[resolved_id]
 
                 return web.json_response({
                     "id": resolved_id,
@@ -462,6 +508,26 @@ async def serve_set_api(request, bridge):
     except Exception as e:
         logging.error(f"Command execution failed: {e}")
         return web.json_response({"error": str(e)}, status=500)
+    
+@with_bridge
+async def serve_callback_api(request, bridge):
+    """Registers a bash script to execute upon occupancy detection."""
+    data = await request.json() if request.method == 'POST' else request.query
+    device_id = data.get('id')
+    script_path = data.get('script')
+    
+    if not device_id or not script_path:
+        return web.json_response({"error": "Missing id or script_path parameter"}, status=400)
+        
+    resolved_id = bridge.resolve_id(device_id)
+    
+    if not os.path.isfile(script_path):
+        return web.json_response({"error": "Specified script file does not exist"}, status=400)
+        
+    bridge.occupancy_callbacks[resolved_id] = script_path
+    bridge._save_callbacks()
+    
+    return web.json_response({"status": "success", "id": resolved_id, "script": script_path})    
 
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
@@ -485,6 +551,7 @@ def main():
     app.router.add_post('/api/set', serve_set_api)
     app.router.add_get('/api/name', serve_name_api)
     app.router.add_post('/api/name', serve_name_api)
+    app.router.add_get('/api/callback', serve_callback_api)
     
     web.run_app(app, host='0.0.0.0', port=args.port)
 

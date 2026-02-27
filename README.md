@@ -7,7 +7,7 @@ This document explains how the local Matter device management system works using
 The system separates background tasks and simplifies network rules to make it easier to use:
 
 1. **Background Process:** The app runs the standard `python-matter-server` as a separate background task. This keeps the heavy work away from the web server.
-2. **Event-Driven Caching & Offline-First:** The web server subscribes to device events and maintains local JSON/text caches (`devices_cache.txt`, `occupancy_cache.json`, and `names_cache.json`). The caches are hydrated immediately upon server startup to ensure seamless continuity and non-blocking, immediate API responses.
+2. **Event-Driven Caching & Offline-First:** The web server subscribes to device events and maintains local JSON/text caches (`devices_cache.txt`, `occupancy_cache.json`, `names_cache.json`, and `callbacks_cache.json`). The caches are hydrated immediately upon server startup to ensure seamless continuity and non-blocking, immediate API responses.
 3. **HTTP Setup:** The web server acts as a middleman. It changes complex WebSocket data into simple HTTP requests (GET/POST). Users only need to communicate via standard web addresses to interact with JSON data.
 
 ## Requirements
@@ -44,14 +44,14 @@ Start the system by typing the executable command `matter-srv`. You can use the 
 
 * **URL:** `/api/sensors`
 * **Method:** `GET`
-* **Description:** Retrieves aggregated sensor states from the cache. Includes standardized ID, an array of assigned names, and a human-readable timestamp (`occupancy_last_active`) for occupancy sensors.
+* **Description:** Retrieves aggregated sensor states from the cache. Includes standardized ID, an array of assigned names, a human-readable timestamp (`occupancy_last_active`), and the registered script path (`occupancy_callback`) if configured.
 * **Example:** `http://localhost:8080/api/sensors`
 
 ### Get specific sensor status
 
 * **URL:** `/api/sensor`
 * **Method:** `GET`
-* **Description:** Retrieves the state and formatted occupancy history for a specific sensor.
+* **Description:** Retrieves the state, formatted occupancy history, and the registered `occupancy_callback` path for a specific sensor.
 * **Parameters:**
   * `id` (string, required): The standardized ID or assigned name of the device.
 * **Example:** `http://localhost:8080/api/sensor?id=LivingRoomSensor`
@@ -87,3 +87,13 @@ Start the system by typing the executable command `matter-srv`. You can use the 
   * `brightness` (float, optional): The desired brightness level from 0.0 to 1.0. Setting to 0.0 powers off the device.
   * `temperature` (integer, optional): The desired color temperature in Kelvin.
 * **Example (POST):** `curl -X POST -H "Content-Type: application/json" -d '{"id": "Living Room Light", "brightness": 0.8, "temperature": 4000}' http://localhost:8080/api/set`
+
+### Register an occupancy callback
+
+* **URL:** `/api/callback`
+* **Method:** `GET` or `POST`
+* **Description:** Registers a local bash script to execute automatically when an occupancy sensor state transitions to 1. The script is invoked as a non-blocking background process.
+* **Parameters / JSON Body:**
+  * `id` (string, required): The standardized ID or assigned name of the sensor.
+  * `script_path` (string, required): The absolute path to the bash script file.
+* **Example (POST):** `curl -X POST -H "Content-Type: application/json" -d '{"id": "LivingRoomSensor", "script_path": "/Users/admin/scripts/alert.sh"}' http://localhost:8080/api/callback`
