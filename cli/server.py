@@ -4,12 +4,13 @@ import logging
 import json
 import os
 import time
+import datetime
 from aiohttp import web, ClientSession
 from matter_server.client.client import MatterClient
 from matter_server.common.models import EventType
 import chip.clusters.Objects as Clusters
-import datetime
 
+# Configure logging format
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 SENSOR_CLUSTERS = {
@@ -33,15 +34,20 @@ class MatterBridgeServer:
         self.process = None
         self.listen_task = None
         
+        # Initialize and hydrate device cache
         self.cache_file = "devices_cache.txt"
         self.cached_devices = []
         self._load_device_cache()
         
-        
-        # Occupancy history storage
+        # Initialize and hydrate occupancy history
         self.occupancy_cache_file = "occupancy_cache.json"
         self.occupancy_history = {}
         self._load_occupancy_history()
+        
+        # Initialize and hydrate names/aliases
+        self.names_cache_file = "names_cache.json"
+        self.device_names = {}
+        self._load_names_cache()
 
     def _load_device_cache(self):
         """Loads device states from the local file during initialization."""
@@ -49,7 +55,7 @@ class MatterBridgeServer:
             try:
                 with open(self.cache_file, "r", encoding="utf-8") as file:
                     self.cached_devices = json.load(file)
-                logging.info(f"Successfully loaded {len(self.cached_devices)} devices from cache.")
+                logging.info(f"Loaded {len(self.cached_devices)} devices from cache.")
             except Exception as e:
                 logging.error(f"Failed to load device cache: {e}")
 
@@ -70,9 +76,36 @@ class MatterBridgeServer:
         except Exception as e:
             logging.error(f"Failed to save occupancy cache: {e}")
 
+    def _load_names_cache(self):
+        """Loads device aliases from cache file."""
+        if os.path.exists(self.names_cache_file):
+            try:
+                with open(self.names_cache_file, "r", encoding="utf-8") as file:
+                    self.device_names = json.load(file)
+            except Exception as e:
+                logging.error(f"Failed to load names cache: {e}")
+
+    def _save_names_cache(self):
+        """Persists device aliases to cache file."""
+        try:
+            with open(self.names_cache_file, "w", encoding="utf-8") as file:
+                json.dump(self.device_names, file, indent=4)
+        except Exception as e:
+            logging.error(f"Failed to save names cache: {e}")
+
+    def resolve_id(self, identifier):
+        """Resolves a given name or ID to the standardized device ID."""
+        if not identifier:
+            return None
+        if identifier.startswith("dev_"):
+            return identifier
+        for dev_id, names in self.device_names.items():
+            if identifier in names:
+                return dev_id
+        return identifier
+
     async def start_process(self):
         """Launches the internal Matter Server subprocess."""
-        logging.info(f"Launching internal Matter Server subprocess on port {self.matter_port}...")
         self.process = await asyncio.create_subprocess_exec(
             "python3", "-m", "matter_server.server", "--storage-path", "./matter_storage", "--port", str(self.matter_port),
             stdout=asyncio.subprocess.DEVNULL,
@@ -81,18 +114,15 @@ class MatterBridgeServer:
         await asyncio.sleep(2.0)
 
     async def establish_connection(self):
-        """Attempts to connect to the Matter server with a polling mechanism."""
-        logging.info("Establishing client connection...")
+        """Attempts to connect to the Matter server."""
         self.session = ClientSession()
         self.client = MatterClient(self.server_url, self.session)
         
         for attempt in range(15):
             try:
                 await self.client.connect()
-                logging.info("Connection established successfully.")
                 return True
             except Exception:
-                logging.info(f"Awaiting server readiness (attempt {attempt + 1}/15)...")
                 await asyncio.sleep(2.0)
         return False
 
@@ -103,20 +133,15 @@ class MatterBridgeServer:
         
         if is_connected:
             self.listen_task = asyncio.create_task(self.client.start_listening())
-            
             # Subscribe to attribute updates to eliminate polling
             self.client.subscribe_events(self._on_event, EventType.ATTRIBUTE_UPDATED)
-            
-            # Perform initial cache population
             self._update_cache()
-            
-            logging.info("DONE: Web server is ready and subscribed to events.")
+            logging.info("Matter bridge is fully operational.")
         else:
             logging.error("Failed to verify Matter server connection.")
 
     async def shutdown(self, app):
         """Cleanup routine for graceful shutdown."""
-        logging.info("Executing resource cleanup procedures...")
         if self.listen_task:
             self.listen_task.cancel()
         if self.session:
@@ -146,6 +171,7 @@ class MatterBridgeServer:
                 device_id = f"dev_{node.node_id}_{endpoint_id}"
                 states = {}
 
+                # Extract lighting and standard states
                 if 6 in endpoint.clusters:
                     raw_val = node.get_attribute_value(endpoint_id, 6, 0)
                     states["on_off"] = bool(raw_val) if raw_val is not None else None
@@ -154,12 +180,14 @@ class MatterBridgeServer:
                 if 768 in endpoint.clusters:
                     states["color_temp_mireds"] = node.get_attribute_value(endpoint_id, 768, 7)
 
+                # Extract sensor states
                 for cluster_id, (sensor_name, attr_id, _) in SENSOR_CLUSTERS.items():
                     if cluster_id in endpoint.clusters:
                         val = node.get_attribute_value(endpoint_id, cluster_id, attr_id)
                         if val is not None:
                             states[sensor_name] = int(val)
                             
+                            # Log occupancy timestamps
                             if sensor_name == "occupancy" and int(val) == 1:
                                 self.occupancy_history[device_id] = int(time.time())
                                 occupancy_updated = True
@@ -182,25 +210,72 @@ class MatterBridgeServer:
         if occupancy_updated:
             self._save_occupancy_history()
 
-def require_server_ready(handler):
-    """Decorator to ensure the server is ready before processing API requests."""
+
+# --- Decorators ---
+
+def with_bridge(handler):
+    """Non-blocking dependency injection for read operations."""
     async def wrapper(request):
         bridge = request.app['bridge']
-        if not bridge.is_ready():
-            return web.json_response({"error": "Server not ready"}, status=503)
         return await handler(request, bridge)
     return wrapper
 
-@require_server_ready
-async def serve_all_devices_api(request, bridge):
-    """API Endpoint to retrieve all cached devices and their absolute states."""
-    if hasattr(bridge, 'cached_devices') and bridge.cached_devices:
-        return web.json_response(bridge.cached_devices)
-    return web.json_response({"error": "Cache is empty or uninitialized"}, status=503)
+def require_server_ready(handler):
+    """Blocking execution guard for hardware write operations."""
+    async def wrapper(request):
+        bridge = request.app['bridge']
+        if not bridge.is_ready():
+            return web.json_response({"error": "Server not ready for hardware control"}, status=503)
+        return await handler(request, bridge)
+    return wrapper
 
-@require_server_ready
+
+# --- API Endpoints ---
+
+@with_bridge
+async def serve_name_api(request, bridge):
+    """Assigns a strictly unique alias to a specific device."""
+    data = await request.json() if request.method == 'POST' else request.query
+    device_id = data.get('id')
+    new_name = data.get('name')
+    
+    if not device_id or not new_name:
+        return web.json_response({"error": "Missing id or name parameter"}, status=400)
+        
+    resolved_id = bridge.resolve_id(device_id)
+    
+    # Enforce global uniqueness of the alias
+    for existing_id, names in bridge.device_names.items():
+        if new_name in names and existing_id != resolved_id:
+            return web.json_response(
+                {"error": "Name conflict: Alias already assigned to another device"}, 
+                status=409
+            )
+    
+    if resolved_id not in bridge.device_names:
+        bridge.device_names[resolved_id] = []
+        
+    if new_name not in bridge.device_names[resolved_id]:
+        bridge.device_names[resolved_id].append(new_name)
+        bridge._save_names_cache()
+        
+    return web.json_response({"status": "success", "id": resolved_id, "names": bridge.device_names[resolved_id]})
+
+@with_bridge
+async def serve_all_devices_api(request, bridge):
+    """Retrieves all cached devices immediately."""
+    if hasattr(bridge, 'cached_devices') and bridge.cached_devices:
+        response_data = []
+        for device in bridge.cached_devices:
+            dev_copy = dict(device)
+            dev_copy["names"] = bridge.device_names.get(device["id"], [])
+            response_data.append(dev_copy)
+        return web.json_response(response_data)
+    return web.json_response([]) 
+
+@with_bridge
 async def serve_lighting_api(request, bridge):
-    """Retrieves lighting states from the cache memory."""
+    """Retrieves lighting states from cache."""
     lighting_devices = []
     
     for device in bridge.cached_devices:
@@ -208,7 +283,6 @@ async def serve_lighting_api(request, bridge):
         
         if "on_off" in states or "brightness_raw" in states:
             state = states.get("on_off")
-            
             mapped_brightness = None
             if "brightness_raw" in states and states["brightness_raw"] is not None:
                 mapped_brightness = round(max(0.0, min(1.0, states["brightness_raw"] / 254.0)), 2)
@@ -221,6 +295,7 @@ async def serve_lighting_api(request, bridge):
                 
             lighting_devices.append({
                 "id": device["id"],
+                "names": bridge.device_names.get(device["id"], []),
                 "state": state,
                 "brightness": mapped_brightness,
                 "temperature": color_temp_kelvin
@@ -228,7 +303,7 @@ async def serve_lighting_api(request, bridge):
                 
     return web.json_response(lighting_devices)
 
-@require_server_ready
+@with_bridge
 async def serve_sensors_api(request, bridge):
     """Retrieves aggregated sensor states and formats occupancy history."""
     sensors_data = []
@@ -246,34 +321,69 @@ async def serve_sensors_api(request, bridge):
             if "occupancy" in sensor_payload:
                 last_active = bridge.occupancy_history.get(device["id"])
                 if last_active:
-                    # Convert Unix epoch integer to human-readable string
                     readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
                     sensor_payload["occupancy_last_active"] = readable_time
 
             sensors_data.append({
                 "id": device["id"],
+                "names": bridge.device_names.get(device["id"], []),
                 **sensor_payload
             })
 
     return web.json_response(sensors_data)
 
+@with_bridge
+async def serve_single_sensor_api(request, bridge):
+    """Retrieves state for a specific sensor ID."""
+    device_id = request.query.get('id')
+    if not device_id:
+        return web.json_response({"error": "Missing sensor id parameter"}, status=400)
+
+    resolved_id = bridge.resolve_id(device_id)
+    sensor_keys = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
+
+    for device in bridge.cached_devices:
+        if device.get("id") == resolved_id:
+            states = device.get("states", {})
+            sensor_payload = {}
+            
+            for key in sensor_keys:
+                if key in states:
+                    sensor_payload[key] = states[key]
+                    
+            if sensor_payload:
+                if "occupancy" in sensor_payload:
+                    last_active = bridge.occupancy_history.get(resolved_id)
+                    if last_active:
+                        readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
+                        sensor_payload["occupancy_last_active"] = readable_time
+
+                return web.json_response({
+                    "id": resolved_id,
+                    "names": bridge.device_names.get(resolved_id, []),
+                    **sensor_payload
+                })
+            
+            return web.json_response({"error": "Device exists but contains no sensor clusters"}, status=404)
+
+    return web.json_response({"error": "Sensor not found in cache"}, status=404)
+
 def extract_matter_pin(setup_code):
+    """Validates and extracts PIN from a manual pairing code."""
     clean_code = setup_code.replace("-", "").replace(" ", "")
-    
     if len(clean_code) not in (11, 21) or not clean_code.isdigit():
         raise ValueError("Invalid manual pairing code format")
-    
     value_2 = int(clean_code[1:6])
     value_3 = int(clean_code[6:10])
-    
     pin_code = (value_3 << 14) | (value_2 & 0x3FFF)
-    
     return pin_code
 
 @require_server_ready
 async def serve_commission_api(request, bridge):
+    """Initiates commissioning and accepts an optional initial name."""
     setup_code = request.query.get('code')
     ip_address = request.query.get('ip')
+    device_name = request.query.get('name')
 
     if not setup_code:
         return web.json_response({"error": "Missing setup code"}, status=400)
@@ -292,24 +402,32 @@ async def serve_commission_api(request, bridge):
                 code=setup_code
             )
             
-        return web.json_response({"status": "success", "code": setup_code, "ip": ip_address})
+        return web.json_response({
+            "status": "success", 
+            "code": setup_code, 
+            "ip": ip_address, 
+            "pending_name": device_name
+        })
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
     
 @require_server_ready
 async def serve_set_api(request, bridge):
+    """Controls a device using either standard ID or alias."""
     data = await request.json() if request.method == 'POST' else request.query
 
     device_id = data.get('id')
     if not device_id:
         return web.json_response({"error": "Missing device id"}, status=400)
 
+    resolved_id = bridge.resolve_id(device_id)
+
     try:
-        parts = device_id.replace("dev_", "").split("_")
+        parts = resolved_id.replace("dev_", "").split("_")
         node_id = int(parts[0])
         endpoint_id = int(parts[1])
     except Exception:
-        return web.json_response({"error": "Invalid ID format. Expected 'dev_X_Y'"}, status=400)
+        return web.json_response({"error": "Invalid ID format"}, status=400)
 
     brightness_str = data.get('brightness')
     temperature_str = data.get('temperature')
@@ -339,46 +457,11 @@ async def serve_set_api(request, bridge):
                 )
                 await bridge.client.send_device_command(node_id, endpoint_id, cmd)
 
-        return web.json_response({"status": "success", "id": device_id})
+        return web.json_response({"status": "success", "id": resolved_id})
 
     except Exception as e:
         logging.error(f"Command execution failed: {e}")
         return web.json_response({"error": str(e)}, status=500)
-    
-@require_server_ready
-async def serve_single_sensor_api(request, bridge):
-    """Retrieves state and formatted occupancy history for a specific sensor ID."""
-    device_id = request.query.get('id')
-    if not device_id:
-        return web.json_response({"error": "Missing sensor id parameter"}, status=400)
-
-    sensor_keys = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
-
-    for device in bridge.cached_devices:
-        if device.get("id") == device_id:
-            states = device.get("states", {})
-            sensor_payload = {}
-            
-            for key in sensor_keys:
-                if key in states:
-                    sensor_payload[key] = states[key]
-                    
-            if sensor_payload:
-                if "occupancy" in sensor_payload:
-                    last_active = bridge.occupancy_history.get(device_id)
-                    if last_active:
-                        # Convert Unix epoch integer to human-readable string
-                        readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
-                        sensor_payload["occupancy_last_active"] = readable_time
-
-                return web.json_response({
-                    "id": device_id,
-                    **sensor_payload
-                })
-            
-            return web.json_response({"error": "Device exists but contains no sensor clusters"}, status=404)
-
-    return web.json_response({"error": "Sensor not found in cache"}, status=404)    
 
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
@@ -396,12 +479,13 @@ def main():
     app.router.add_get('/api/devices', serve_all_devices_api)
     app.router.add_get('/api/lights', serve_lighting_api)
     app.router.add_get('/api/sensors', serve_sensors_api)
+    app.router.add_get('/api/sensor', serve_single_sensor_api)
     app.router.add_get('/api/register', serve_commission_api)
     app.router.add_get('/api/set', serve_set_api)
     app.router.add_post('/api/set', serve_set_api)
-    app.router.add_get('/api/sensor', serve_single_sensor_api)
+    app.router.add_get('/api/name', serve_name_api)
+    app.router.add_post('/api/name', serve_name_api)
     
-    logging.info(f"Bootstrapping Web server on port {args.port}...")
     web.run_app(app, host='0.0.0.0', port=args.port)
 
 if __name__ == '__main__':
