@@ -171,6 +171,37 @@ async def serve_sensors_api():
             })
     return sensors_data
 
+@app.get("/api/sensor")
+async def serve_single_sensor_api(id: str):
+    """Isolates specific sensor entity data targeting a strictly defined identifier."""
+    resolved_id = bridge_instance.resolve_id(id)
+    sensor_keys = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
+
+    for device in bridge_instance.cached_devices:
+        if device.get("id") == resolved_id:
+            states = device.get("states", {})
+            sensor_payload = {}
+            for key in sensor_keys:
+                if key in states:
+                    sensor_payload[key] = states[key]
+                    
+            if sensor_payload:
+                if "occupancy" in sensor_payload:
+                    last_active = bridge_instance.occupancy_history.get(resolved_id)
+                    if last_active:
+                        readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
+                        sensor_payload["occupancy_last_active"] = readable_time
+                    if resolved_id in bridge_instance.occupancy_callbacks:
+                        sensor_payload["occupancy_callback"] = bridge_instance.occupancy_callbacks[resolved_id]
+
+                return {
+                    "id": resolved_id,
+                    "names": bridge_instance.device_names.get(resolved_id, []),
+                    **sensor_payload
+                }
+            raise HTTPException(status_code=404, detail="Device exists but contains no sensor clusters")
+    raise HTTPException(status_code=404, detail="Sensor not found in cache")
+
 @app.api_route("/api/name", methods=["GET", "POST"])
 async def serve_name_api(request: Request, payload: Optional[NamePayload] = None):
     """Enforces constraint uniqueness when resolving logic names into physical hardware IDs."""
