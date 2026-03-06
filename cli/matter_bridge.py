@@ -134,7 +134,7 @@ class MatterBridgeServer:
         self.session = ClientSession()
         self.client = MatterClient(self.server_url, self.session)
         
-        for attempt in range(15):
+        for attempt in range(30):
             try:
                 await self.client.connect()
                 return True

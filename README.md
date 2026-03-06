@@ -1,14 +1,18 @@
-# Matter Web Controller
+# Unified Matter and Logical Web Controller
 
-This document explains how the local Matter device management system works using a web interface.
+This document delineates the operational framework of the hybrid device management system, unifying physical Matter networks and virtual logical bridges via a standardized web interface.
 
 ## System Architecture
 
-The system separates background tasks and simplifies network rules to make it easier to use:
+The architecture implements a dual-stack aggregation model to optimize performance and interoperability:
 
-1. **Background Process:** The app runs the standard `python-matter-server` as a separate background task. This keeps the heavy work away from the web server.
-2. **Event-Driven Caching & Offline-First:** The web server subscribes to device events and maintains local JSON/text caches (`devices_cache.txt`, `occupancy_cache.json`, `names_cache.json`, and `callbacks_cache.json`). The caches are hydrated immediately upon server startup to ensure seamless continuity and non-blocking, immediate API responses.
-3. **HTTP Setup:** The web server acts as a middleman. It changes complex WebSocket data into simple HTTP requests (GET/POST). Users only need to communicate via standard web addresses to interact with JSON data.
+1. **Physical Matter Subsystem:** The application executes `python-matter-server` as an isolated background daemon. This isolates heavy protocol operations from the primary web server.
+
+2. **Logical Bridge Integration:** The system incorporates third-party control planes (e.g., Casambi) via HTTP metadata polling and embedded script execution. It automatically normalizes scale mismatches (e.g., mapping raw Casambi values to standardized levels).
+
+3. **Event-Driven Caching:** The web server subscribes to hardware events and maintains local persistence arrays (`devices_cache.txt`, `bridge_cache.json`, etc.). Caches are hydrated immediately upon initialization to guarantee non-blocking, asynchronous API responses.
+
+4. **Unified Abstraction Layer:** Complex websocket operations and embedded script executions are abstracted into standard HTTP requests. Control commands are dynamically routed to physical or logical nodes based on identifier resolution.
 
 ## Requirements
 
@@ -16,95 +20,115 @@ Python 3.12 or newer.
 
 ## Installation
 
-Create a virtual environment and install the package using your package manager. This will automatically install required tools like `aiohttp` and `home-assistant-chip-core`.
+Create a virtual environment and execute the package installation. Dependencies such as `aiohttp`, `fastapi`, and `home-assistant-chip-core` are resolved automatically.
 
 ## How to Run
 
-Start the system by typing the executable command `matter-srv`. You can use the `--port` parameter to set the web server port. The default is 8080. The background Matter server will automatically use the next port number.
+Execute the command `matter-srv`. Utilize the `--port` argument to specify the web server port (default: 8080). The background Matter process inherently binds to the subsequent port integer.
 
 ## API Endpoints
 
-**Note on Device IDs and Aliases:** All devices use a standardized composite ID format: `dev_{node_id}_{endpoint_id}`. You can assign unique human-readable names (aliases) to devices using the `/api/name` endpoint. These names can be used interchangeably with the standard ID in all control and query APIs.
+**Note on Device Identifiers:** All hardware and virtual nodes utilize a standardized hash identifier format (`dev_{node_id}_{endpoint_id}`). Aliases assigned via `/api/name` function interchangeably with standard IDs across all control protocols.
+
+### Add a Logical Bridge
+
+* URL `/api/bridge`
+
+* Method `GET`
+
+* Description: Registers a new logical bridge and persists its network configuration to the local cache.
+
+* Parameters:
+  * `ip` (string, required): The IPv4 address of the logical bridge.
+  * `port` (integer, required): The communication port.
+
+* Example: `http://localhost:8080/api/bridge?ip=192.168.1.220&port=8000`
 
 ### Get all cached devices
 
-* **URL:** `/api/devices`
-* **Method:** `GET`
-* **Description:** Retrieves the complete list of all devices, their assigned names, and raw states directly from the local cache.
-* **Example:** `http://localhost:8080/api/devices`
+* URL: `/api/devices`
+* Method: `GET`
+
+* Description: Retrieves the unified list of all local Matter devices and registered logical devices, including their aliases and raw states.
+
+* Example: `http://localhost:8080/api/devices`
 
 ### Get lighting device status
 
-* **URL:** `/api/lights`
-* **Method:** `GET`
-* **Description:** Retrieves cached lighting states. The data includes the standardized ID, an array of assigned names, power state, normalized brightness level (0.0 to 1.0), and color temperature (in Kelvin).
-* **Example:** `http://localhost:8080/api/lights`
+* URL: `/api/lights`
+
+* Method: `GET`
+
+* Description: Aggregates lighting states across physical and logical nodes. Data includes the standardized ID, aliases, Boolean power state, normalized brightness (0.0 to 1.0), and color temperature in Kelvin (if applicable).
+
+* Example: `http://localhost:8080/api/lights`
 
 ### Get sensor device status
 
-* **URL:** `/api/sensors`
-* **Method:** `GET`
-* **Description:** Retrieves aggregated sensor states from the cache. Includes standardized ID, an array of assigned names, a human-readable timestamp (`occupancy_last_active`), and the registered script path (`occupancy_callback`) if configured.
-* **Example:** `http://localhost:8080/api/sensors`
+* URL: `/api/sensors`
 
-### Get specific sensor status
+* Method: `GET`
 
-* **URL:** `/api/sensor`
-* **Method:** `GET`
-* **Description:** Retrieves the state, formatted occupancy history, and the registered `occupancy_callback` path for a specific sensor.
-* **Parameters:**
-  * `id` (string, required): The standardized ID or assigned name of the device.
-* **Example:** `http://localhost:8080/api/sensor?id=LivingRoomSensor`
+* Description: Retrieves sensor metrics from physical Matter nodes. Includes standard identifiers, aliases, normalized sensor values, human-readable occupancy timestamps, and registered script paths.
+
+* Example: `http://localhost:8080/api/sensors`
 
 ### Assign a name to a device
 
-* **URL:** `/api/name`
-* **Method:** `GET` or `POST`
-* **Description:** Assigns a unique alias to a device. The system enforces global uniqueness for each name across all devices.
-* **Parameters / JSON Body:**
-  * `id` (string, required): The standard ID or existing name of the device.
-  * `name` (string, required): The new unique name to assign.
-* **Example (POST):** `curl -X POST -H "Content-Type: application/json" -d '{"id": "dev_1_8", "name": "Living Room Light"}' http://localhost:8080/api/name`
+* URL: `/api/name`
+
+* Method: `GET` or `POST`
+
+* Description: Assigns a globally unique alias to a physical or logical device identifier.
+
+* Parameters / JSON Body:
+  * `id` (string, required): The standard ID or existing alias.
+  * `name` (string, required): The target unique string to assign.
+
+* Example (POST): `curl -X POST -H "Content-Type: application/json" -d '{"id": "dev_1_8", "name": "Main Hall"}' http://localhost:8080/api/name`
 
 ### Commission a new Matter device
 
-* **URL:** `/api/register`
-* **Method:** `GET`
-* **Description:** Initiates the commissioning process for a new device on the local network.
-* **Parameters:**
-  * `code` (string, required): The Matter setup payload code.
-  * `ip` (string, optional): The IP address of the device for direct network commissioning.
-  * `name` (string, optional): A pending name to assign to the device upon successful commissioning.
-* **Example:** `http://localhost:8080/api/register?code=11223344556&name=KitchenLight`
+* URL: `/api/register`
+
+* Method: `GET`
+
+* Description: Executes network inclusion routines for unprovisioned physical Matter hardware.
+
+* Parameters:
+  * `code` (string, required): The standard manual pairing payload.
+  * `ip` (string, optional): Target IP address for localized IP-based commissioning.
+  * `name` (string, optional): A pending alias mapped post-commissioning.
+
+* Example: `http://localhost:8080/api/register?code=11223344556&name=Kitchen`
 
 ### Control a lighting device
 
-* **URL:** `/api/set`
-* **Method:** `GET` or `POST`
-* **Description:** Controls the brightness and color temperature of a specific lighting device.
-* **Parameters / JSON Body:**
-  * `id` (string, required): The standardized ID or assigned name (e.g., `dev_1_8` or `Living Room Light`).
-  * `brightness` (float, optional): The desired brightness level from 0.0 to 1.0. Setting to 0.0 powers off the device.
-  * `temperature` (integer, optional): The desired color temperature in Kelvin.
-* **Example (POST):** `curl -X POST -H "Content-Type: application/json" -d '{"id": "Living Room Light", "brightness": 0.8, "temperature": 4000}' http://localhost:8080/api/set`
+* URL: `/api/set`
 
-### Register an occupancy callback
+* Method: `GET` or `POST`
 
-* **URL:** `/api/callback`
-* **Method:** `GET` or `POST`
-* **Description:** Registers a local bash script to execute automatically when an occupancy sensor state transitions to 1. The script is invoked as a non-blocking background process.
-* **Parameters / JSON Body:**
-  * `id` (string, required): The standardized ID or assigned name of the sensor.
-  * `script_path` (string, required): The absolute path to the bash script file.
-* **Example (POST):** `curl -X POST -H "Content-Type: application/json" -d '{"id": "LivingRoomSensor", "script_path": "/Users/admin/scripts/alert.sh"}' http://localhost:8080/api/callback`
+* Description: Actuates state mutation. The server dynamically routes the payload to Matter clusters for physical devices or executes embedded Python scripts for logical nodes.
 
-### Create and register an occupancy bash script
+* Parameters / JSON Body:
+  * `id` (string, required): The standardized ID or alias.
+  * `brightness` (float, optional): Target level (0.0 to 1.0).
+  * `temperature` (integer, optional): Target color temperature (Kelvin).
 
-* **URL:** `/api/script`
-* **Method:** `GET` or `POST`
-* **Description:** Serves an HTML form to write a bash script. Submitting the form saves the script content to an auto-generated file path utilizing a timestamp and registers it to the device's occupancy callback.
-* **Parameters:**
-  * `id` (string, required): The standardized ID or assigned name of the sensor.
-* **Form Body (POST):**
-  * `content` (string, required): The bash script content to be saved and executed.
-* **Example:** `http://localhost:8080/api/script?id=LivingRoomSensor`
+* Example (POST): `curl -X POST -H "Content-Type: application/json" -d '{"id": "Sofa and Painting", "brightness": 0.8}' http://localhost:8080/api/set`
+
+### Create and register an occupancy script
+
+* URL: `/api/script`
+
+* Method: `GET` or `POST`
+
+* Description: Serves a graphical interface (GET) or processes form payloads (POST) to generate executable bash scripts. Scripts are auto-registered to the occupancy callback of the specified physical sensor.
+
+* Parameters (GET):
+  * `id` (string, required): The standard ID or alias of the target sensor.
+
+* Form Body (POST):
+  * `content` (string, required): The rigorous bash script logic.
+
+* Example: `http://localhost:8080/api/script?id=Motion_Entry`

@@ -206,3 +206,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .DS_Store
+
+# Matter Web Controller cache files
+devices_cache.txt
+occupancy_cache.json
+names_cache.json
+callbacks_cache.json
+bridge_cache.json
+*.cache.txt
+*.cache.json

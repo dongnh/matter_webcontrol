@@ -3,12 +3,9 @@ import os
 import sys
 import io
 import urllib.request
-from contextlib import redirect_stdout, asynccontextmanager
+from contextlib import redirect_stdout
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, HTTPException
-import uvicorn
 import hashlib
-from typing import Dict, Any
 
 class LogicalBridgeClient:
     def __init__(self, host: str, port: int):
@@ -101,9 +98,13 @@ class LogicalBridgeManager:
                     except Exception:
                         logical_level = 0.0
 
-                # State computation for dimmable devices
-                is_on = logical_level > 0.0
-                brightness_raw = int(logical_level * 254)
+                # Data Normalization: Auto-detect scale and clamp to 0-254 range
+                if logical_level > 1.0:
+                    brightness_raw = int(max(0.0, min(254.0, logical_level)))
+                else:
+                    brightness_raw = int(max(0.0, min(254.0, logical_level * 254.0)))
+
+                is_on = brightness_raw > 0
                 
                 # Construct safe unique ID
                 raw_id = f"{node_id}_{endpoint_id}"
@@ -126,29 +127,3 @@ class LogicalBridgeManager:
                 aggregated.append(record)
                 
         return {"total_devices": len(aggregated), "devices": aggregated}
-
-# Instantiate the global manager
-manager = LogicalBridgeManager()
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Execute automated state restoration upon server initialization
-    manager.load_cache()
-    yield
-
-app = FastAPI(lifespan=lifespan)
-
-@app.get("/api/add")
-def api_add_bridge(ip: str, port: int) -> Dict[str, str]:
-    try:
-        node_id = manager.add_bridge(ip, port)
-        return {"status": "success", "message": f"Registered {node_id}"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.get("/api/devices")
-def api_get_all_devices() -> Dict[str, Any]:
-    return manager.get_all_devices()
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
