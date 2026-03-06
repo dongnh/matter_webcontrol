@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 import chip.clusters.Objects as Clusters
-from matter_bridge import MatterBridgeServer
+from cli.matter_bridge import MatterBridgeServer
 
 # Configure standard logging protocol
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
