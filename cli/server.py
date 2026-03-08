@@ -292,8 +292,19 @@ async def serve_set_api(request: Request, payload: Optional[ControlPayload] = No
         if client:
             try:
                 if brightness_str is not None:
-                    # Execute embedded Python script mapped to 'set_level'
-                    client.execute_event(endpoint_id, "set_level", brightness_str)
+                    # Convert fractional brightness to 8-bit integer scale (0-254)
+                    brightness_val = float(brightness_str)
+                    clamped_brightness = max(0.0, min(1.0, brightness_val))
+                    logical_level = int(clamped_brightness * 254)
+                    client.execute_event(endpoint_id, "set_level", str(logical_level))
+                
+                if temperature_str is not None:
+                    # Convert Kelvin to Mired for logical bridge execution
+                    temp_kelvin = int(temperature_str)
+                    if temp_kelvin > 0:
+                        mireds = int(1000000 / temp_kelvin)
+                        client.execute_event(endpoint_id, "set_color_temperature", str(mireds))
+                        
                 return {"status": "success", "id": resolved_id, "type": "logical"}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Logical bridge execution failed: {str(e)}")
