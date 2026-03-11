@@ -3,7 +3,6 @@ import logging
 import json
 import os
 import time
-import subprocess
 from aiohttp import ClientSession
 from matter_server.client.client import MatterClient
 from matter_server.common.models import EventType
@@ -44,10 +43,8 @@ class MatterBridgeServer:
         self.device_names = {}
         self._load_names_cache()
 
-        # Initialize and hydrate callback registry
-        self.callbacks_file = "callbacks_cache.json"
-        self.occupancy_callbacks = {}
-        self._load_callbacks()
+        # Initialize subscribers for Server-Sent Events
+        self.occupancy_subscribers = {}
 
     def _load_device_cache(self):
         """Loads device states from the local file during initialization."""
@@ -103,29 +100,11 @@ class MatterBridgeServer:
             if identifier in names:
                 return dev_id
         return identifier
-    
-    def _load_callbacks(self):
-        """Loads registered bash script callbacks from cache file."""
-        if os.path.exists(self.callbacks_file):
-            try:
-                with open(self.callbacks_file, "r", encoding="utf-8") as file:
-                    self.occupancy_callbacks = json.load(file)
-            except Exception as e:
-                logging.error(f"Failed to load callbacks cache: {e}")
-
-    def _save_callbacks(self):
-        """Persists registered bash script callbacks to cache file."""
-        try:
-            with open(self.callbacks_file, "w", encoding="utf-8") as file:
-                json.dump(self.occupancy_callbacks, file, indent=4)
-        except Exception as e:
-            logging.error(f"Failed to save callbacks cache: {e}")
 
     async def start_process(self):
         """Launches the internal Matter Server subprocess and streams logs directly to the console."""
         self.process = await asyncio.create_subprocess_exec(
             "python3", "-m", "matter_server.server", "--storage-path", "./matter_storage", "--port", str(self.matter_port)
-            # Removed DEVNULL assignments to implicitly inherit standard output and standard error
         )
         await asyncio.sleep(2.0)
 
@@ -149,7 +128,6 @@ class MatterBridgeServer:
         
         if is_connected:
             self.listen_task = asyncio.create_task(self.client.start_listening())
-            # Subscribe to attribute updates to eliminate polling
             self.client.subscribe_events(self._on_event, EventType.ATTRIBUTE_UPDATED)
             self._update_cache()
             logging.info("Matter bridge is fully operational.")
@@ -181,14 +159,12 @@ class MatterBridgeServer:
             return
 
         occupancy_updated = False
-        triggered_callbacks = []
 
         for node in self.client.get_nodes():
             for endpoint_id, endpoint in node.endpoints.items():
                 device_id = f"dev_{node.node_id}_{endpoint_id}"
                 states = {}
 
-                # Extract lighting and standard states
                 if 6 in endpoint.clusters:
                     raw_val = node.get_attribute_value(endpoint_id, 6, 0)
                     states["on_off"] = bool(raw_val) if raw_val is not None else None
@@ -197,24 +173,27 @@ class MatterBridgeServer:
                 if 768 in endpoint.clusters:
                     states["color_temp_mireds"] = node.get_attribute_value(endpoint_id, 768, 7)
 
-                # Extract sensor states
                 for cluster_id, (sensor_name, attr_id, _) in SENSOR_CLUSTERS.items():
                     if cluster_id in endpoint.clusters:
                         val = node.get_attribute_value(endpoint_id, cluster_id, attr_id)
                         if val is not None:
                             states[sensor_name] = int(val)
                             
-                            # Log occupancy timestamps and queue callback
-                            if sensor_name == "occupancy" and int(val) == 1:
+                            if sensor_name == "occupancy":
+                                current_occupancy = int(val)
                                 prev_device = next((d for d in self.cached_devices if d["id"] == device_id), None)
                                 prev_occupancy = prev_device.get("states", {}).get("occupancy", 0) if prev_device else 0
                                 
-                                if prev_occupancy == 0:
+                                if current_occupancy != prev_occupancy:
+                                    event_timestamp = int(time.time())
+                                    if device_id in self.occupancy_subscribers:
+                                        for q in self.occupancy_subscribers[device_id]:
+                                            # Queue both state and timestamp
+                                            q.put_nowait((current_occupancy, event_timestamp))
+                                
+                                if current_occupancy == 1 and prev_occupancy == 0:
                                     self.occupancy_history[device_id] = int(time.time())
                                     occupancy_updated = True
-                                    
-                                    if device_id in self.occupancy_callbacks:
-                                        triggered_callbacks.append(self.occupancy_callbacks[device_id])
 
                 devices.append({
                     "id": device_id,
@@ -233,10 +212,3 @@ class MatterBridgeServer:
 
         if occupancy_updated:
             self._save_occupancy_history()
-
-        # Execute registered bash scripts subsequent to cache persistence
-        for script_path in triggered_callbacks:
-            if os.path.exists(script_path):
-                subprocess.Popen(["bash", script_path])
-            else:
-                logging.error(f"Callback script missing: {script_path}")

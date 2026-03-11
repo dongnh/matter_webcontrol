@@ -8,11 +8,11 @@ The architecture implements a dual-stack aggregation model to optimize performan
 
 1. **Physical Matter Subsystem:** The application executes `python-matter-server` as an isolated background daemon. This isolates heavy protocol operations from the primary web server.
 
-2. **Logical Bridge Integration:** The system incorporates third-party control planes (e.g., Casambi) via HTTP metadata polling and embedded script execution. It automatically normalizes scale mismatches (e.g., mapping raw Casambi values to standardized levels).
+2. **Logical Bridge Integration:** The system incorporates third-party control planes (e.g., Casambi) via HTTP metadata polling. It automatically normalizes scale mismatches (e.g., mapping raw Casambi values to standardized levels).
 
 3. **Event-Driven Caching:** The web server subscribes to hardware events and maintains local persistence arrays (`devices_cache.txt`, `bridge_cache.json`, etc.). Caches are hydrated immediately upon initialization to guarantee non-blocking, asynchronous API responses.
 
-4. **Unified Abstraction Layer:** Complex websocket operations and embedded script executions are abstracted into standard HTTP requests. Control commands are dynamically routed to physical or logical nodes based on identifier resolution.
+4. **Unified Abstraction Layer:** Complex websocket operations are abstracted into standard HTTP requests and Server-Sent Events (SSE) streams. Control commands are dynamically routed to physical or logical nodes based on identifier resolution.
 
 ## Requirements
 
@@ -47,6 +47,7 @@ Execute the command `matter-srv`. Utilize the `--port` argument to specify the w
 ### Get all cached devices
 
 * URL: `/api/devices`
+
 * Method: `GET`
 
 * Description: Retrieves the unified list of all local Matter devices and registered logical devices, including their aliases and raw states.
@@ -69,7 +70,7 @@ Execute the command `matter-srv`. Utilize the `--port` argument to specify the w
 
 * Method: `GET`
 
-* Description: Retrieves sensor metrics from physical Matter nodes. Includes standard identifiers, aliases, normalized sensor values, human-readable occupancy timestamps, and registered script paths.
+* Description: Retrieves sensor metrics from physical Matter nodes. Includes standard identifiers, aliases, normalized sensor values, and occupancy timestamps formatted in ISO 8601 UTC.
 
 * Example: `http://localhost:8080/api/sensors`
 
@@ -108,7 +109,7 @@ Execute the command `matter-srv`. Utilize the `--port` argument to specify the w
 
 * Method: `GET` or `POST`
 
-* Description: Actuates state mutation. The server dynamically routes the payload to Matter clusters for physical devices or executes embedded Python scripts for logical nodes.
+* Description: Actuates state mutation. The server dynamically routes the payload to Matter clusters for physical devices or executes logical protocols for virtual nodes.
 
 * Parameters / JSON Body:
   * `id` (string, required): The standardized ID or alias.
@@ -117,18 +118,15 @@ Execute the command `matter-srv`. Utilize the `--port` argument to specify the w
 
 * Example (POST): `curl -X POST -H "Content-Type: application/json" -d '{"id": "Sofa and Painting", "brightness": 0.8}' http://localhost:8080/api/set`
 
-### Create and register an occupancy script
+### Subscribe to occupancy events
 
-* URL: `/api/script`
+* URL: `/api/subscribe`
 
-* Method: `GET` or `POST`
+* Method: `GET`
 
-* Description: Serves a graphical interface (GET) or processes form payloads (POST) to generate executable bash scripts. Scripts are auto-registered to the occupancy callback of the specified physical sensor.
+* Description: Establishes a Server-Sent Events (SSE) stream to transmit real-time occupancy state mutations. The payload includes the target identifier, integer state, and an ISO 8601 timestamp.
 
-* Parameters (GET):
+* Parameters:
   * `id` (string, required): The standard ID or alias of the target sensor.
 
-* Form Body (POST):
-  * `content` (string, required): The rigorous bash script logic.
-
-* Example: `http://localhost:8080/api/script?id=Motion_Entry`
+* Example: `curl -N -H "Accept: text/event-stream" "http://localhost:8080/api/subscribe?id=Motion_Entry"`

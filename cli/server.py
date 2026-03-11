@@ -1,11 +1,12 @@
 import argparse
+import asyncio
 import logging
 import os
 import time
 import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
@@ -17,7 +18,6 @@ from cli.logic_bridge import LogicalBridgeManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 bridge_instance: MatterBridgeServer = None
-# Initialize the global logical bridge manager
 logical_manager = LogicalBridgeManager()
 
 @asynccontextmanager
@@ -28,15 +28,12 @@ async def lifespan(app: FastAPI):
     bridge_instance = MatterBridgeServer(port)
     await bridge_instance.initialize(app)
     
-    # Execute automated state restoration and verify logical bridge accessibility
     logical_manager.load_cache()
     
     yield
     await bridge_instance.shutdown(app)
 
 app = FastAPI(title="Unified Matter and Logical API Bridge", lifespan=lifespan)
-
-# --- Rigid Data Validation Models ---
 
 class NamePayload(BaseModel):
     id: str
@@ -47,18 +44,10 @@ class ControlPayload(BaseModel):
     brightness: Optional[float] = None
     temperature: Optional[int] = None
 
-class CallbackPayload(BaseModel):
-    id: str
-    script: str
-
-# --- Operational Guards ---
-
 def verify_hardware_readiness():
     """Validates operational context prior to executing physical hardware state mutations."""
     if not bridge_instance or not bridge_instance.is_ready():
         raise HTTPException(status_code=503, detail="Server not ready for hardware control")
-
-# --- Logical Bridge Integration Endpoints ---
 
 @app.get("/api/bridge")
 async def add_logical_bridge_api(ip: str, port: int):
@@ -69,21 +58,17 @@ async def add_logical_bridge_api(ip: str, port: int):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# --- Routing Protocol Endpoints ---
-
 @app.get("/api/devices")
 async def serve_all_devices_api():
     """Retrieves identical cache representation of the current local and logical device states."""
     response_data = []
     
-    # Append physical Matter devices
     if bridge_instance and bridge_instance.cached_devices:
         for device in bridge_instance.cached_devices:
             dev_copy = dict(device)
             dev_copy["names"] = bridge_instance.device_names.get(device["id"], [])
             response_data.append(dev_copy)
             
-    # Append logical devices
     logical_data = logical_manager.get_all_devices().get("devices", [])
     response_data.extend(logical_data)
     
@@ -94,7 +79,6 @@ async def serve_lighting_api():
     """Filters and scales hardware attributes strictly relevant to lighting nodes."""
     lighting_devices = []
     
-    # Process physical devices
     if bridge_instance:
         for device in bridge_instance.cached_devices:
             states = device.get("states", {})
@@ -118,7 +102,6 @@ async def serve_lighting_api():
                     "temperature": color_temp_kelvin
                 })
                 
-    # Process logical devices
     logical_data = logical_manager.get_all_devices().get("devices", [])
     for device in logical_data:
         states = device.get("states", {})
@@ -161,8 +144,6 @@ async def serve_sensors_api():
                 if last_active:
                     readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
                     sensor_payload["occupancy_last_active"] = readable_time
-                if device["id"] in bridge_instance.occupancy_callbacks:
-                    sensor_payload["occupancy_callback"] = bridge_instance.occupancy_callbacks[device["id"]]
 
             sensors_data.append({
                 "id": device["id"],
@@ -191,8 +172,6 @@ async def serve_single_sensor_api(id: str):
                     if last_active:
                         readable_time = datetime.datetime.fromtimestamp(last_active).strftime('%Y-%m-%d %H:%M:%S')
                         sensor_payload["occupancy_last_active"] = readable_time
-                    if resolved_id in bridge_instance.occupancy_callbacks:
-                        sensor_payload["occupancy_callback"] = bridge_instance.occupancy_callbacks[resolved_id]
 
                 return {
                     "id": resolved_id,
@@ -276,15 +255,12 @@ async def serve_set_api(request: Request, payload: Optional[ControlPayload] = No
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device id")
 
-    # Attempt to resolve ID via Matter bridge aliases first
     resolved_id = bridge_instance.resolve_id(device_id)
 
-    # Check if target is a logical device via state aggregation
     logical_devices = logical_manager.get_all_devices().get("devices", [])
     logical_target = next((d for d in logical_devices if d["id"] == resolved_id), None)
 
     if logical_target:
-        # Route execution payload to logical bridge
         node_id = logical_target["node_id"]
         endpoint_id = logical_target["endpoint_id"]
         client = logical_manager.registry.get(node_id)
@@ -292,14 +268,12 @@ async def serve_set_api(request: Request, payload: Optional[ControlPayload] = No
         if client:
             try:
                 if brightness_str is not None:
-                    # Convert fractional brightness to 8-bit integer scale (0-254)
                     brightness_val = float(brightness_str)
                     clamped_brightness = max(0.0, min(1.0, brightness_val))
                     logical_level = int(clamped_brightness * 254)
                     client.execute_event(endpoint_id, "set_level", str(logical_level))
                 
                 if temperature_str is not None:
-                    # Convert Kelvin to Mired for logical bridge execution
                     temp_kelvin = int(temperature_str)
                     if temp_kelvin > 0:
                         mireds = int(1000000 / temp_kelvin)
@@ -310,7 +284,6 @@ async def serve_set_api(request: Request, payload: Optional[ControlPayload] = No
                 raise HTTPException(status_code=500, detail=f"Logical bridge execution failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Logical bridge client offline")
 
-    # Proceed with physical Matter hardware actuation
     verify_hardware_readiness()
 
     try:
@@ -350,84 +323,37 @@ async def serve_set_api(request: Request, payload: Optional[ControlPayload] = No
         logging.error(f"Command execution failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.api_route("/api/script", methods=["GET", "POST"])
-async def serve_script_api(request: Request):
-    """Yields graphical HTML representation directly addressing arbitrary script deployment."""
-    device_id = request.query_params.get("id", "")
-    if not device_id:
-        return HTMLResponse(content="Missing device ID parameter in URL (?id=...)", status_code=400)
+@app.get("/api/subscribe")
+async def subscribe_api(request: Request, id: str):
+    """Establishes a Server-Sent Events stream for occupancy state mutations."""
+    resolved_id = bridge_instance.resolve_id(id)
 
-    resolved_id = bridge_instance.resolve_id(device_id)
+    if resolved_id not in bridge_instance.occupancy_subscribers:
+        bridge_instance.occupancy_subscribers[resolved_id] = []
 
-    if request.method == "GET":
-        content = "#!/bin/bash\n\n# Add your script logic here\n"
-        existing_script = bridge_instance.occupancy_callbacks.get(resolved_id)
-        if existing_script and os.path.isfile(existing_script):
-            try:
-                with open(existing_script, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            except Exception:
-                pass
+    client_queue = asyncio.Queue()
+    bridge_instance.occupancy_subscribers[resolved_id].append(client_queue)
 
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Edit Bash Script</title>
-            <style>
-                body {{ font-family: sans-serif; padding: 20px; }}
-                textarea {{ width: 100%; max-width: 600px; padding: 10px; font-family: monospace; }}
-                input[type="submit"] {{ padding: 10px 20px; cursor: pointer; }}
-                .info {{ color: #555; margin-bottom: 15px; font-weight: bold; }}
-            </style>
-        </head>
-        <body>
-            <h2>Edit Callback Script</h2>
-            <div class="info">Device ID: {resolved_id}</div>
-            <form method="POST" action="/api/script?id={resolved_id}">
-                <textarea name="content" rows="15" required>{content}</textarea><br><br>
-                <input type="submit" value="Save and Register">
-            </form>
-        </body>
-        </html>
-        """
-        return HTMLResponse(content=html)
-
-    elif request.method == "POST":
-        form_data = await request.form()
-        content = form_data.get("content")
-
-        if content is None:
-            raise HTTPException(status_code=400, detail="Missing script content parameters")
-
-        timestamp = int(time.time())
-        script_dir = "./scripts"
-        script_path = f"{script_dir}/callback_{resolved_id}_{timestamp}.sh"
-
+    async def event_generator():
         try:
-            os.makedirs(script_dir, exist_ok=True)
-            with open(script_path, 'w', encoding='utf-8') as f:
-                f.write(str(content).replace('\\r\\n', '\\n'))
-            os.chmod(script_path, 0o755)
-        except Exception as e:
-            return HTMLResponse(content=f"Failed to save script: {e}", status_code=500)
+            while True:
+                if await request.is_disconnected():
+                    break
+                
+                # Unpack state and timestamp from the queue
+                occupancy_state, timestamp = await client_queue.get()
+                
+                # Convert UNIX timestamp to ISO 8601 UTC format
+                iso_time = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc).isoformat()
+                
+                yield f"data: {{\"id\": \"{resolved_id}\", \"occupancy\": {occupancy_state}, \"timestamp\": \"{iso_time}\"}}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if client_queue in bridge_instance.occupancy_subscribers.get(resolved_id, []):
+                bridge_instance.occupancy_subscribers[resolved_id].remove(client_queue)
 
-        bridge_instance.occupancy_callbacks[resolved_id] = script_path
-        bridge_instance._save_callbacks()
-
-        success_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head><title>Success</title></head>
-        <body>
-            <h2>Script saved and registered successfully.</h2>
-            <p>Device: {resolved_id}</p>
-            <p>Generated Path: {script_path}</p>
-            <a href="/api/script?id={resolved_id}">Return to Editor</a>
-        </body>
-        </html>
-        """
-        return HTMLResponse(content=success_html)
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
