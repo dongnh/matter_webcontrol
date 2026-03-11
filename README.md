@@ -1,4 +1,4 @@
-# Unified Matter and Logical Web Controller
+# Matter Web Controller
 
 This document delineates the operational framework of the hybrid device management system, unifying physical Matter networks and virtual logical bridges via a standardized web interface.
 
