@@ -25,15 +25,27 @@ async def lifespan(app: FastAPI):
     """Manages the initialization and termination of hardware and logical subprocesses."""
     global bridge_instance
     port = getattr(app.state, "port", 8080)
+    
+    # Initialize physical Matter bridge
     bridge_instance = MatterBridgeServer(port)
     await bridge_instance.initialize(app)
     
+    # Initialize logical bridges from persistent storage
     logical_manager.load_cache()
     
+    # Execute comprehensive state refresh during startup
+    if bridge_instance and bridge_instance.is_ready():
+        bridge_instance._update_cache()
+        
+    updated_logical_count = logical_manager.refresh_bridges()
+    logging.info(f"Startup synchronization complete. Refreshed Matter cache and {updated_logical_count} logical bridges.")
+    
     yield
+    
+    # Execute graceful shutdown
     await bridge_instance.shutdown(app)
 
-app = FastAPI(title="Unified Matter and Logical API Bridge", lifespan=lifespan)
+app = FastAPI(title="Matter Web Controller", lifespan=lifespan)
 
 class NamePayload(BaseModel):
     id: str
@@ -355,6 +367,30 @@ async def subscribe_api(request: Request, id: str):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+@app.get("/api/refresh")
+async def refresh_all_bridges_api():
+    # Force a synchronized state refresh for both physical and logical networks
+    matter_status = "skipped"
+    
+    # 1. Refresh physical Matter devices
+    if bridge_instance and bridge_instance.is_ready():
+        try:
+            bridge_instance._update_cache()
+            matter_status = "success"
+        except Exception as e:
+            logging.error(f"Matter bridge refresh error: {e}")
+            matter_status = "failed"
+
+    # 2. Refresh logical bridges
+    try:
+        updated_count = logical_manager.refresh_bridges()
+        return {
+            "status": "success", 
+            "message": f"Refreshed metadata for {updated_count} logical bridges. Matter bridge status: {matter_status}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/metadata")
 async def serve_metadata_api(request: Request):
     # Extracts network context for dynamic URL generation
@@ -378,8 +414,14 @@ async def serve_metadata_api(request: Request):
         if not dev_id:
             continue
             
-        names = bridge_instance.device_names.get(dev_id, []) if bridge_instance else []
-        name = names[0] if names else dev_id
+        # Extract names from the device object (logical) and physical cache
+        available_names = device.get("names", [])
+        if bridge_instance and dev_id in bridge_instance.device_names:
+            for n in bridge_instance.device_names.get(dev_id, []):
+                if n not in available_names:
+                    available_names.append(n)
+            
+        name = available_names[0] if available_names else dev_id
         states = device.get("states", {})
         
         events = {}

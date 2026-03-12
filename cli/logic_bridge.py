@@ -127,3 +127,15 @@ class LogicalBridgeManager:
                 aggregated.append(record)
                 
         return {"total_devices": len(aggregated), "devices": aggregated}
+    
+    def refresh_bridges(self) -> int:
+        # Iterate through the registry and fetch updated metadata for each client
+        success_count = 0
+        for node_id, client in self.registry.items():
+            try:
+                client.fetch_metadata()
+                success_count += 1
+            except Exception:
+                # Ignore unreachable bridges during the refresh cycle
+                pass
+        return success_count
