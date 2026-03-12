@@ -130,3 +130,13 @@ Execute the command `matter-srv`. Utilize the `--port` argument to specify the w
   * `id` (string, required): The standard ID or alias of the target sensor.
 
 * Example: `curl -N -H "Accept: text/event-stream" "http://localhost:8080/api/subscribe?id=Motion_Entry"`
+
+### Get logical bridge metadata
+
+* URL: `/api/metadata`
+
+* Method: `GET`
+
+* Description: Outputs a JSON payload describing the server network as a logical lighting controller. It dynamically detects all physical Matter devices and external logical nodes, generating executable Python scripts mapped to standard Matter events (e.g., turn_on, set_level, subscribe_occupancy).
+
+* Example: `http://localhost:8080/api/metadata`

@@ -355,6 +355,106 @@ async def subscribe_api(request: Request, id: str):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+@app.get("/api/metadata")
+async def serve_metadata_api(request: Request):
+    # Extracts network context for dynamic URL generation
+    host = request.url.hostname or "127.0.0.1"
+    port = request.url.port or 8080
+    base_url = f"http://{host}:{port}"
+    
+    devices_metadata = []
+    all_devices = []
+    
+    # Append physical Matter devices directly managed by this server
+    if bridge_instance and bridge_instance.cached_devices:
+        all_devices.extend(bridge_instance.cached_devices)
+        
+    # Append external devices from logical bridges
+    logical_data = logical_manager.get_all_devices().get("devices", [])
+    all_devices.extend(logical_data)
+    
+    for device in all_devices:
+        dev_id = device.get("id")
+        if not dev_id:
+            continue
+            
+        names = bridge_instance.device_names.get(dev_id, []) if bridge_instance else []
+        name = names[0] if names else dev_id
+        states = device.get("states", {})
+        
+        events = {}
+        hardware_type = "unknown"
+        
+        has_on_off = "on_off" in states
+        has_brightness = "brightness_raw" in states
+        has_color_temp = "color_temp_mireds" in states
+        has_occupancy = "occupancy" in states
+        
+        if has_occupancy:
+            hardware_type = "occupancy_sensor"
+            events["read_occupancy"] = {
+                "trigger": "occupancy_sensing_cluster",
+                "script": f"import urllib.request, json\nresponse = urllib.request.urlopen('{base_url}/api/sensor?id={dev_id}')\ndata = json.loads(response.read().decode('utf-8'))\nprint(data.get('occupancy', 0))"
+            }
+            events["subscribe_occupancy"] = {
+                "trigger": "occupancy_sse_stream",
+                "script": f"import urllib.request\nresponse = urllib.request.urlopen('{base_url}/api/subscribe?id={dev_id}')\nfor line in response:\n    print(line.decode('utf-8').strip())"
+            }
+        elif has_on_off:
+            if has_color_temp:
+                hardware_type = "color_temperature_light"
+            elif has_brightness:
+                hardware_type = "dimmable_light"
+            else:
+                hardware_type = "on_off_light"
+                
+            events["turn_on"] = {
+                "trigger": "on_off_cluster",
+                "script": f"import urllib.request\nurllib.request.urlopen('{base_url}/api/set?id={dev_id}&brightness=1.0')"
+            }
+            events["turn_off"] = {
+                "trigger": "on_off_cluster",
+                "script": f"import urllib.request\nurllib.request.urlopen('{base_url}/api/set?id={dev_id}&brightness=0.0')"
+            }
+            
+            if has_brightness or has_color_temp:
+                events["set_level"] = {
+                    "trigger": "level_control_cluster",
+                    "script": f"import sys, urllib.request\nmatter_level = int(sys.argv[1]) if len(sys.argv) > 1 else 254\nbrightness = matter_level / 254.0\nurllib.request.urlopen(f'{base_url}/api/set?id={dev_id}&brightness={{brightness}}')"
+                }
+                events["read_level"] = {
+                    "trigger": "level_control_cluster",
+                    "script": f"import urllib.request, json\nresponse = urllib.request.urlopen('{base_url}/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == '{dev_id}'), {{}})\nbrightness = device.get('brightness', 0.0)\nprint(int(brightness * 254))"
+                }
+                
+            if has_color_temp:
+                events["set_color_temperature"] = {
+                    "trigger": "color_control_cluster",
+                    "script": f"import sys, urllib.request\nmireds = int(sys.argv[1]) if len(sys.argv) > 1 else 250\nkelvin = int(1000000 / mireds) if mireds > 0 else 4000\nurllib.request.urlopen(f'{base_url}/api/set?id={dev_id}&temperature={{kelvin}}')"
+                }
+                events["read_color_temperature"] = {
+                    "trigger": "color_control_cluster",
+                    "script": f"import urllib.request, json\nresponse = urllib.request.urlopen('{base_url}/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == '{dev_id}'), {{}})\nkelvin = device.get('temperature', 4000)\nmireds = int(1000000 / kelvin) if kelvin and kelvin > 0 else 0\nprint(mireds)"
+                }
+                
+        if hardware_type != "unknown":
+            devices_metadata.append({
+                "node_id": dev_id,
+                "name": name,
+                "hardware_type": hardware_type,
+                "events": events
+            })
+
+    return {
+        "bridge": {
+            "id": "matter_bridge_http",
+            "type": "lighting_controller",
+            "network_host": host,
+            "network_port": port
+        },
+        "devices": devices_metadata
+    }
+
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
