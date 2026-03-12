@@ -1,4 +1,4 @@
-# Unified Matter and Logical Web Controller
+# Matter Web Controller
 
 This document delineates the operational framework of the hybrid device management system, unifying physical Matter networks and virtual logical bridges via a standardized web interface.
 
@@ -119,24 +119,15 @@ Execute the command `matter-srv`. Utilize the `--port` argument to specify the w
 * Example (POST): `curl -X POST -H "Content-Type: application/json" -d '{"id": "Sofa and Painting", "brightness": 0.8}' http://localhost:8080/api/set`
 
 ### Subscribe to occupancy events
-
 * URL: `/api/subscribe`
-
 * Method: `GET`
-
 * Description: Establishes a Server-Sent Events (SSE) stream to transmit real-time occupancy state mutations. The payload includes the target identifier, integer state, and an ISO 8601 timestamp.
-
 * Parameters:
   * `id` (string, required): The standard ID or alias of the target sensor.
-
 * Example: `curl -N -H "Accept: text/event-stream" "http://localhost:8080/api/subscribe?id=Motion_Entry"`
 
 ### Get logical bridge metadata
-
 * URL: `/api/metadata`
-
 * Method: `GET`
-
 * Description: Outputs a JSON payload describing the server network as a logical lighting controller. It dynamically detects all physical Matter devices and external logical nodes, generating executable Python scripts mapped to standard Matter events (e.g., turn_on, set_level, subscribe_occupancy).
-
 * Example: `http://localhost:8080/api/metadata`
