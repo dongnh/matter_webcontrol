@@ -5,12 +5,11 @@ This document delineates the operational framework of the hybrid device manageme
 ## System Architecture
 The architecture implements a dual-stack aggregation model to optimize performance and interoperability:
 
-1. **Physical Matter Subsystem:** The application executes `python-matter-server` as an isolated background daemon. This isolates heavy protocol operations from the primary web server.
-2. **Logical Bridge Integration:** The system incorporates third-party control planes (e.g., Casambi) via HTTP metadata polling. It automatically normalizes scale mismatches (e.g., mapping raw Casambi values to standardized levels).
-3. **Event-Driven Caching:** The web server subscribes to hardware events and maintains local persistence arrays (`devices_cache.txt`, `bridge_cache.json`, etc.). Caches are hydrated immediately upon initialization to guarantee non-blocking, asynchronous API responses.
-4. **Unified Abstraction Layer:** Complex websocket operations are abstracted into standard HTTP requests and Server-Sent Events (SSE) streams. Control commands are dynamically routed to physical or logical nodes based on identifier resolution.
+1. Physical Matter Subsystem: The application executes `python-matter-server` as an isolated background daemon. This isolates heavy protocol operations from the primary web server.
+2. Logical Bridge Integration: The system incorporates third-party control planes (e.g., Casambi) via HTTP metadata polling. It automatically normalizes scale mismatches (e.g., mapping raw Casambi values to standardized levels).
+3. Event-Driven Caching: The web server subscribes to hardware events and maintains local persistence arrays (`devices_cache.txt`, `bridge_cache.json`, etc.). Caches are hydrated immediately upon initialization to guarantee non-blocking, asynchronous API responses.
+4. Unified Abstraction Layer: Complex websocket operations are abstracted into standard HTTP requests and Server-Sent Events (SSE) streams. Control commands are dynamically routed to physical or logical nodes based on identifier resolution.
 , etc.). Caches are hydrated immediately upon initialization to guarantee non-blocking, asynchronous API responses.
-4. **Unified Abstraction Layer:** Complex websocket operations are abstracted into standard HTTP requests and Server-Sent Events (SSE) streams. Control commands are dynamically routed to physical or logical nodes based on identifier resolution.
 
 ## Limitations
 * Network Provisioning: The system exclusively supports Matter devices previously connected to the Local Area Network (LAN). Consult individual device documentation for network inclusion procedures.
@@ -103,72 +102,72 @@ Execute the command `matter-srv`. Utilize the `--port` argument to specify the w
 * Example: `http://localhost:8080/api/metadata`
 * Sample Response:
   ```json
-    {
-      "bridge": 
       {
-        "id": "matter_bridge_http",
-        "type": "lighting_controller",
-        "network_host": "192.168.1.220",
-        "network_port": 8080
-      },      
-      "devices": 
-      [
+        "bridge": 
         {
-          "node_id": "matter_light_1",
-          "name": "Tunable Desk Light",
-          "hardware_type": "color_temperature_light",
-          "events": 
+          "id": "matter_bridge_http",
+          "type": "lighting_controller",
+          "network_host": "192.168.1.220",
+          "network_port": 8080
+        },      
+        "devices": 
+        [
           {
-            "turn_on": 
+            "node_id": "matter_light_1",
+            "name": "Tunable Desk Light",
+            "hardware_type": "color_temperature_light",
+            "events": 
             {
-              "trigger": "on_off_cluster",
-              "script": "import urllib.request\n# Execute GET request to turn on\nurllib.request.urlopen('http://192.168.1.220:8080/api/set?id=matter_light_1&brightness=1.0')"
-            },
-            "turn_off": 
+              "turn_on": 
+              {
+                "trigger": "on_off_cluster",
+                "script": "import urllib.request\n# Execute GET request to turn on\nurllib.request.urlopen('http://192.168.1.220:8080/api/set?id=matter_light_1&brightness=1.0')"
+              },
+              "turn_off": 
+              {
+                "trigger": "on_off_cluster",
+                "script": "import urllib.request\n# Execute GET request to turn off\nurllib.request.urlopen('http://192.168.1.220:8080/api/set?id=matter_light_1&brightness=0.0')"
+              },
+              "set_level": 
+              {
+                "trigger": "level_control_cluster",
+                "script": "import sys, urllib.request\n# Parse Matter level (0-254) and convert to float brightness (0.0-1.0)\nmatter_level = int(sys.argv[1]) if len(sys.argv) > 1 else 254\nbrightness = matter_level / 254.0\nurllib.request.urlopen(f'http://192.168.1.220:8080/api/set?id=matter_light_1&brightness={brightness}')"
+              },
+              "read_level": 
+              {
+                "trigger": "level_control_cluster",
+                "script": "import urllib.request, json\n# Retrieve float brightness from API and convert to Matter level (0-254)\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == 'matter_light_1'), {})\nbrightness = device.get('brightness', 0.0)\nprint(int(brightness * 254))"
+              },
+              "set_color_temperature": 
+              {
+                "trigger": "color_control_cluster",
+                "script": "import sys, urllib.request\n# Parse Mireds and convert to Kelvin\nmireds = int(sys.argv[1]) if len(sys.argv) > 1 else 250\nkelvin = int(1000000 / mireds) if mireds > 0 else 4000\nurllib.request.urlopen(f'http://192.168.1.220:8080/api/set?id=matter_light_1&temperature={kelvin}')"
+              },
+              "read_color_temperature": 
+              {
+                "trigger": "color_control_cluster",
+                "script": "import urllib.request, json\n# Retrieve Kelvin from API and convert to Mireds\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == 'matter_light_1'), {})\nkelvin = device.get('temperature', 4000)\nmireds = int(1000000 / kelvin) if kelvin and kelvin > 0 else 0\nprint(mireds)"
+              }
+            }
+          },
+          {
+            "node_id": "matter_sensor_1",
+            "name": "Motion Sensor",
+            "hardware_type": "occupancy_sensor",
+            "events": 
             {
-              "trigger": "on_off_cluster",
-              "script": "import urllib.request\n# Execute GET request to turn off\nurllib.request.urlopen('http://192.168.1.220:8080/api/set?id=matter_light_1&brightness=0.0')"
-            },
-            "set_level": 
-            {
-              "trigger": "level_control_cluster",
-              "script": "import sys, urllib.request\n# Parse Matter level (0-254) and convert to float brightness (0.0-1.0)\nmatter_level = int(sys.argv[1]) if len(sys.argv) > 1 else 254\nbrightness = matter_level / 254.0\nurllib.request.urlopen(f'http://192.168.1.220:8080/api/set?id=matter_light_1&brightness={brightness}')"
-            },
-            "read_level": 
-            {
-              "trigger": "level_control_cluster",
-              "script": "import urllib.request, json\n# Retrieve float brightness from API and convert to Matter level (0-254)\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == 'matter_light_1'), {})\nbrightness = device.get('brightness', 0.0)\nprint(int(brightness * 254))"
-            },
-            "set_color_temperature": 
-            {
-              "trigger": "color_control_cluster",
-              "script": "import sys, urllib.request\n# Parse Mireds and convert to Kelvin\nmireds = int(sys.argv[1]) if len(sys.argv) > 1 else 250\nkelvin = int(1000000 / mireds) if mireds > 0 else 4000\nurllib.request.urlopen(f'http://192.168.1.220:8080/api/set?id=matter_light_1&temperature={kelvin}')"
-            },
-            "read_color_temperature": 
-            {
-              "trigger": "color_control_cluster",
-              "script": "import urllib.request, json\n# Retrieve Kelvin from API and convert to Mireds\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == 'matter_light_1'), {})\nkelvin = device.get('temperature', 4000)\nmireds = int(1000000 / kelvin) if kelvin and kelvin > 0 else 0\nprint(mireds)"
+              "read_occupancy": 
+              {
+                "trigger": "occupancy_sensing_cluster",
+                "script": "import urllib.request, json\n# Poll current occupancy status\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/sensor?id=matter_sensor_1')\ndata = json.loads(response.read().decode('utf-8'))\nprint(data.get('occupancy', 0))"
+              },
+              "subscribe_occupancy": 
+              {
+                "trigger": "occupancy_sse_stream",
+                "script": "import urllib.request\n# Connect to Server-Sent Events stream\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/subscribe?id=matter_sensor_1')\nfor line in response:\n    print(line.decode('utf-8').strip())"
+              }
             }
           }
-        },
-        {
-          "node_id": "matter_sensor_1",
-          "name": "Motion Sensor",
-          "hardware_type": "occupancy_sensor",
-          "events": 
-          {
-            "read_occupancy": 
-            {
-              "trigger": "occupancy_sensing_cluster",
-              "script": "import urllib.request, json\n# Poll current occupancy status\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/sensor?id=matter_sensor_1')\ndata = json.loads(response.read().decode('utf-8'))\nprint(data.get('occupancy', 0))"
-            },
-            "subscribe_occupancy": 
-            {
-              "trigger": "occupancy_sse_stream",
-              "script": "import urllib.request\n# Connect to Server-Sent Events stream\nresponse = urllib.request.urlopen('http://192.168.1.220:8080/api/subscribe?id=matter_sensor_1')\nfor line in response:\n    print(line.decode('utf-8').strip())"
-            }
-          }
-        }
-      ]
-    }
-  ```
+        ]
+      }
+    ```  
