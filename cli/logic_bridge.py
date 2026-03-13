@@ -106,6 +106,15 @@ class LogicalBridgeManager:
 
                 is_on = brightness_raw > 0
                 
+                # Fetch color temperature with error handling
+                color_temperature = 0
+                if "read_color_temperature" in device_info.get("events", {}):
+                    try:
+                        ct_result = client.execute_event(endpoint_id, "read_color_temperature")
+                        color_temperature = int(float(ct_result)) if ct_result else 0
+                    except Exception:
+                        color_temperature = 0
+
                 # Construct safe unique ID
                 raw_id = f"{node_id}_{endpoint_id}"
                 safe_id = "dev_" + hashlib.md5(raw_id.encode()).hexdigest()[:8]
@@ -120,7 +129,8 @@ class LogicalBridgeManager:
                     "endpoint_id": endpoint_id,
                     "states": {
                         "on_off": is_on,
-                        "brightness_raw": brightness_raw
+                        "brightness_raw": brightness_raw,
+                        "color_temperature": color_temperature
                     },
                     "names": [device_name]
                 }
