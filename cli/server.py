@@ -475,21 +475,21 @@ async def serve_metadata_api(request: Request):
             if has_brightness or has_color_temp:
                 events["set_level"] = {
                     "trigger": "level_control_cluster",
-                    "script": f"import sys, urllib.request\nmatter_level = int(sys.argv[1]) if len(sys.argv) > 1 else 254\nbrightness = matter_level / 254.0\nurllib.request.urlopen(f'{base_url}/api/set?id={dev_id}&brightness={{brightness}}')"
+                    "script": f"import sys, urllib.request\nlevel = int(sys.argv[1]) if len(sys.argv) > 1 else 254\nurllib.request.urlopen(f'{base_url}/api/level?id={dev_id}&level={{level}}')"
                 }
                 events["read_level"] = {
                     "trigger": "level_control_cluster",
-                    "script": f"import urllib.request, json\nresponse = urllib.request.urlopen('{base_url}/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == '{dev_id}'), {{}})\nbrightness = device.get('brightness', 0.0)\nprint(int(brightness * 254))"
+                    "script": f"import urllib.request, json\ntry:\n    response = urllib.request.urlopen('{base_url}/api/level?id={dev_id}')\n    data = json.loads(response.read().decode('utf-8'))\n    print(data.get('level', 0))\nexcept Exception:\n    print(0)"
                 }
                 
             if has_color_temp:
                 events["set_color_temperature"] = {
                     "trigger": "color_control_cluster",
-                    "script": f"import sys, urllib.request\nmireds = int(sys.argv[1]) if len(sys.argv) > 1 else 250\nkelvin = int(1000000 / mireds) if mireds > 0 else 4000\nurllib.request.urlopen(f'{base_url}/api/set?id={dev_id}&temperature={{kelvin}}')"
+                    "script": f"import sys, urllib.request\nmireds = int(sys.argv[1]) if len(sys.argv) > 1 else 250\nurllib.request.urlopen(f'{base_url}/api/mired?id={dev_id}&mireds={{mireds}}')"
                 }
                 events["read_color_temperature"] = {
                     "trigger": "color_control_cluster",
-                    "script": f"import urllib.request, json\nresponse = urllib.request.urlopen('{base_url}/api/lights')\ndata = json.loads(response.read().decode('utf-8'))\ndevice = next((d for d in data if d.get('id') == '{dev_id}'), {{}})\nkelvin = device.get('temperature', 4000)\nmireds = int(1000000 / kelvin) if kelvin and kelvin > 0 else 0\nprint(mireds)"
+                    "script": f"import urllib.request, json\ntry:\n    response = urllib.request.urlopen('{base_url}/api/mired?id={dev_id}')\n    data = json.loads(response.read().decode('utf-8'))\n    print(data.get('mireds', 0))\nexcept Exception:\n    print(0)"
                 }
                 
         if hardware_type != "unknown":
@@ -509,6 +509,154 @@ async def serve_metadata_api(request: Request):
         },
         "devices": devices_metadata
     }
+
+class LevelPayload(BaseModel):
+    id: str
+    level: Optional[int] = None
+
+class MiredPayload(BaseModel):
+    id: str
+    mireds: Optional[int] = None
+
+@app.api_route("/api/level", methods=["GET", "POST"])
+async def serve_level_api(request: Request, payload: Optional[LevelPayload] = None):
+    """Retrieves or mutates the raw brightness level (0-254) of a specific node."""
+    if request.method == "POST" and payload:
+        device_id = payload.id
+        level_str = payload.level
+    else:
+        device_id = request.query_params.get("id")
+        level_str = request.query_params.get("level")
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device id")
+
+    resolved_id = bridge_instance.resolve_id(device_id)
+
+    # Accessor Mode (Getter)
+    if level_str is None:
+        for device in bridge_instance.cached_devices:
+            if device["id"] == resolved_id:
+                states = device.get("states", {})
+                if "brightness_raw" in states:
+                    return {"id": resolved_id, "level": states["brightness_raw"]}
+                    
+        logical_devices = logical_manager.get_all_devices().get("devices", [])
+        for device in logical_devices:
+            if device["id"] == resolved_id:
+                states = device.get("states", {})
+                if "brightness_raw" in states:
+                    return {"id": resolved_id, "level": states["brightness_raw"]}
+                    
+        raise HTTPException(status_code=404, detail="Device not found or level state unsupported")
+
+    # Mutator Mode (Setter)
+    level_val = max(0, min(254, int(level_str)))
+
+    logical_devices = logical_manager.get_all_devices().get("devices", [])
+    logical_target = next((d for d in logical_devices if d["id"] == resolved_id), None)
+
+    if logical_target:
+        node_id = logical_target["node_id"]
+        endpoint_id = logical_target["endpoint_id"]
+        client = logical_manager.registry.get(node_id)
+        if client:
+            try:
+                client.execute_event(endpoint_id, "set_level", str(level_val))
+                return {"status": "success", "id": resolved_id, "level": level_val, "type": "logical"}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Logical bridge execution failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Logical bridge client offline")
+
+    verify_hardware_readiness()
+    try:
+        parts = resolved_id.replace("dev_", "").split("_")
+        node_id = int(parts[0])
+        endpoint_id = int(parts[1])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    try:
+        if level_val == 0:
+            cmd = Clusters.OnOff.Commands.Off()
+        else:
+            cmd = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(level=level_val, transitionTime=0)
+        await bridge_instance.client.send_device_command(node_id, endpoint_id, cmd)
+        return {"status": "success", "id": resolved_id, "level": level_val, "type": "physical"}
+    except Exception as e:
+        logging.error(f"Command execution failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.api_route("/api/mired", methods=["GET", "POST"])
+async def serve_mired_api(request: Request, payload: Optional[MiredPayload] = None):
+    """Retrieves or mutates the color temperature (mireds) of a specific node."""
+    if request.method == "POST" and payload:
+        device_id = payload.id
+        mireds_str = payload.mireds
+    else:
+        device_id = request.query_params.get("id")
+        mireds_str = request.query_params.get("mireds")
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device id")
+
+    resolved_id = bridge_instance.resolve_id(device_id)
+
+    # Accessor Mode (Getter)
+    if mireds_str is None:
+        for device in bridge_instance.cached_devices:
+            if device["id"] == resolved_id:
+                states = device.get("states", {})
+                if "color_temp_mireds" in states:
+                    return {"id": resolved_id, "mireds": states["color_temp_mireds"]}
+                    
+        logical_devices = logical_manager.get_all_devices().get("devices", [])
+        for device in logical_devices:
+            if device["id"] == resolved_id:
+                states = device.get("states", {})
+                if "color_temp_mireds" in states:
+                    return {"id": resolved_id, "mireds": states["color_temp_mireds"]}
+                    
+        raise HTTPException(status_code=404, detail="Device not found or color temperature unsupported")
+
+    # Mutator Mode (Setter)
+    mireds_val = int(mireds_str)
+
+    logical_devices = logical_manager.get_all_devices().get("devices", [])
+    logical_target = next((d for d in logical_devices if d["id"] == resolved_id), None)
+
+    if logical_target:
+        node_id = logical_target["node_id"]
+        endpoint_id = logical_target["endpoint_id"]
+        client = logical_manager.registry.get(node_id)
+        if client:
+            try:
+                client.execute_event(endpoint_id, "set_color_temperature", str(mireds_val))
+                return {"status": "success", "id": resolved_id, "mireds": mireds_val, "type": "logical"}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Logical bridge execution failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Logical bridge client offline")
+
+    verify_hardware_readiness()
+    try:
+        parts = resolved_id.replace("dev_", "").split("_")
+        node_id = int(parts[0])
+        endpoint_id = int(parts[1])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    try:
+        cmd = Clusters.ColorControl.Commands.MoveToColorTemperature(
+            colorTemperatureMireds=mireds_val,
+            transitionTime=0,
+            optionsMask=0,
+            optionsOverride=0
+        )
+        await bridge_instance.client.send_device_command(node_id, endpoint_id, cmd)
+        return {"status": "success", "id": resolved_id, "mireds": mireds_val, "type": "physical"}
+    except Exception as e:
+        logging.error(f"Command execution failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
