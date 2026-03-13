@@ -77,7 +77,14 @@ async def serve_all_devices_api():
     
     if bridge_instance and bridge_instance.cached_devices:
         for device in bridge_instance.cached_devices:
+            # Create a deep copy to prevent mutating the internal cache
             dev_copy = dict(device)
+            dev_copy["states"] = dict(device.get("states", {}))
+            
+            # Purge invalid hardware temperature values
+            if dev_copy["states"].get("color_temp_mireds") == 0:
+                dev_copy["states"].pop("color_temp_mireds", None)
+                
             dev_copy["names"] = bridge_instance.device_names.get(device["id"], [])
             response_data.append(dev_copy)
             
@@ -102,17 +109,18 @@ async def serve_lighting_api():
                     if not state:
                         mapped_brightness = 0.0
                 
-                color_temp_kelvin = None
-                if "color_temp_mireds" in states and states["color_temp_mireds"] is not None and states["color_temp_mireds"] > 0:
-                    color_temp_kelvin = int(1000000 / states["color_temp_mireds"])
-                    
-                lighting_devices.append({
+                device_payload = {
                     "id": device["id"],
                     "names": bridge_instance.device_names.get(device["id"], []),
                     "state": state,
-                    "brightness": mapped_brightness,
-                    "temperature": color_temp_kelvin
-                })
+                    "brightness": mapped_brightness
+                }
+                
+                # Conditionally append physical temperature
+                if "color_temp_mireds" in states and states["color_temp_mireds"]:
+                    device_payload["temperature"] = int(1000000 / states["color_temp_mireds"])
+                    
+                lighting_devices.append(device_payload)
                 
     logical_data = logical_manager.get_all_devices().get("devices", [])
     for device in logical_data:
@@ -125,13 +133,18 @@ async def serve_lighting_api():
                 if not state:
                     mapped_brightness = 0.0
                     
-            lighting_devices.append({
+            device_payload = {
                 "id": device["id"],
                 "names": device.get("names", []),
                 "state": state,
-                "brightness": mapped_brightness,
-                "temperature": None 
-            })
+                "brightness": mapped_brightness
+            }
+            
+            # Conditionally append logical temperature
+            if "color_temp_mireds" in states and states["color_temp_mireds"] > 0:
+                device_payload["temperature"] = int(1000000 / states["color_temp_mireds"])
+                    
+            lighting_devices.append(device_payload)
             
     return lighting_devices
 

@@ -122,16 +122,22 @@ class LogicalBridgeManager:
                 # Extract explicit name from metadata, fallback to endpoint_id
                 device_name = device_info.get("name", endpoint_id)
 
+                # Construct states dictionary dynamically
+                device_states = {
+                    "on_off": is_on,
+                    "brightness_raw": brightness_raw
+                }
+                
+                # Omit color_temperature field if the value is 0
+                if color_temperature > 0:
+                    device_states["color_temp_mireds"] = color_temperature
+
                 # Construct record matching the hardware constraints
                 record = {
                     "id": safe_id,
                     "node_id": node_id,
                     "endpoint_id": endpoint_id,
-                    "states": {
-                        "on_off": is_on,
-                        "brightness_raw": brightness_raw,
-                        "color_temperature": color_temperature
-                    },
+                    "states": device_states,
                     "names": [device_name]
                 }
                 aggregated.append(record)
