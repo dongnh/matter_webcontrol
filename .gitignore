@@ -215,3 +215,4 @@ callbacks_cache.json
 bridge_cache.json
 *.cache.txt
 *.cache.json
+/.claude
