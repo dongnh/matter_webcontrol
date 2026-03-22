@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -101,11 +102,19 @@ class MatterBridgeServer:
                 await asyncio.sleep(2.0)
         return False
 
-    async def initialize(self, app):
+    async def initialize(self, app, fabric_label: str | None = None):
         await self.start_process()
         if await self.establish_connection():
             self.listen_task = asyncio.create_task(self.client.start_listening())
             self.client.subscribe_events(self._on_event, EventType.ATTRIBUTE_UPDATED)
+
+            if fabric_label:
+                try:
+                    await self.client.send_command("set_fabric_label", label=fabric_label)
+                    logging.info(f"Fabric label set to: {fabric_label}")
+                except Exception as e:
+                    logging.warning(f"Failed to set fabric label: {e}")
+
             self._update_cache()
             logging.info("Matter bridge is fully operational.")
         else:
@@ -128,6 +137,58 @@ class MatterBridgeServer:
     def _on_event(self, event, data):
         self._update_cache()
 
+    @staticmethod
+    def _get_stable_id(node, ep_id) -> tuple[str, str | None]:
+        """Generate a stable device ID from hardware UniqueID or SerialNumber.
+
+        Returns (device_id, unique_id) where unique_id is the raw hardware
+        identifier used, or None if falling back to node_id.
+        """
+        unique_id = None
+        # Basic Information cluster (40) is on endpoint 0
+        if 0 in node.endpoints and 40 in node.endpoints[0].clusters:
+            unique_id = node.get_attribute_value(0, 40, 18)  # UniqueID
+            if unique_id is None:
+                unique_id = node.get_attribute_value(0, 40, 15)  # SerialNumber
+
+        raw = f"{unique_id}_{ep_id}" if unique_id else f"{node.node_id}_{ep_id}"
+        device_id = f"dev_{hashlib.md5(raw.encode()).hexdigest()[:8]}"
+        return device_id, unique_id
+
+    def _migrate_ids(self, devices: list[dict]):
+        """Migrate cache keys from old dev_{node}_{ep} format to new stable IDs."""
+        mapping = {}
+        for dev in devices:
+            old_id = f"dev_{dev['node_id']}_{dev['endpoint_id']}"
+            if old_id != dev["id"]:
+                mapping[old_id] = dev["id"]
+
+        if not mapping:
+            return
+
+        # Migrate device_names
+        for old_id, new_id in mapping.items():
+            if old_id in self.device_names:
+                existing = self.device_names.pop(old_id)
+                self.device_names.setdefault(new_id, [])
+                for name in existing:
+                    if name not in self.device_names[new_id]:
+                        self.device_names[new_id].append(name)
+        self._save_names_cache()
+
+        # Migrate occupancy_history
+        for old_id, new_id in mapping.items():
+            if old_id in self.occupancy_history:
+                self.occupancy_history[new_id] = self.occupancy_history.pop(old_id)
+        self._save_json("occupancy_cache.json", self.occupancy_history)
+
+        # Migrate occupancy_subscribers (in-memory)
+        for old_id, new_id in mapping.items():
+            if old_id in self.occupancy_subscribers:
+                self.occupancy_subscribers[new_id] = self.occupancy_subscribers.pop(old_id)
+
+        logging.info(f"Migrated {len(mapping)} device IDs to stable format.")
+
     def _update_cache(self):
         """Extract states from all Matter nodes and update local caches."""
         if not self.client:
@@ -137,8 +198,10 @@ class MatterBridgeServer:
         occupancy_updated = False
 
         for node in self.client.get_nodes():
+            device_id, unique_id = self._get_stable_id(node, 0)  # resolve once per node
+
             for ep_id, endpoint in node.endpoints.items():
-                device_id = f"dev_{node.node_id}_{ep_id}"
+                device_id, _ = self._get_stable_id(node, ep_id)
                 states = {}
 
                 # On/Off cluster
@@ -179,9 +242,11 @@ class MatterBridgeServer:
                     "id": device_id,
                     "node_id": node.node_id,
                     "endpoint_id": ep_id,
+                    "unique_id": unique_id,
                     "states": states,
                 })
 
+        self._migrate_ids(devices)
         self.cached_devices = devices
         self._save_json("devices_cache.txt", devices)
 
