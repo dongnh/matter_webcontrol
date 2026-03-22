@@ -216,7 +216,7 @@ async def mired_api(request: Request, payload: Optional[MiredPayload] = None):
 
 @app.get("/api/subscribe")
 async def subscribe_api(request: Request, id: str):
-    resolved = controller.bridge.resolve_id(id)
+    resolved = id
     controller.bridge.occupancy_subscribers.setdefault(resolved, [])
 
     queue = asyncio.Queue()

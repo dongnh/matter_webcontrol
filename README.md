@@ -63,7 +63,7 @@ The Matter server process binds to `port + 1` automatically.
 
 ## API Reference
 
-> **Device IDs:** Devices use stable hash-based IDs derived from hardware UniqueID (e.g. `dev_a3f7c1b2`). Aliases set via `/api/name` work interchangeably with IDs in all endpoints.
+> **Device IDs:** Devices use stable hash-based IDs derived from hardware UniqueID (e.g. `dev_a3f7c1b2`). All endpoints require the canonical `dev_*` ID. Aliases set via `/api/name` are for display purposes only.
 
 ### `GET /api/bridge` — Register a logical bridge
 
@@ -104,7 +104,7 @@ GET /api/sensors
 
 | Param | Type   | Required | Description        |
 |-------|--------|----------|--------------------|
-| `id`  | string | yes      | Device ID or alias |
+| `id`  | string | yes      | Device ID          |
 
 ```
 GET /api/sensor?id=Motion_Entry
@@ -114,7 +114,7 @@ GET /api/sensor?id=Motion_Entry
 
 | Param  | Type   | Required | Description        |
 |--------|--------|----------|--------------------|
-| `id`   | string | yes      | Device ID or alias |
+| `id`   | string | yes      | Device ID          |
 | `name` | string | yes      | New unique alias   |
 
 ```bash
@@ -127,7 +127,7 @@ curl -X POST -H "Content-Type: application/json" \
 
 | Param  | Type   | Required | Description        |
 |--------|--------|----------|--------------------|
-| `id`   | string | yes      | Device ID or alias |
+| `id`   | string | yes      | Device ID          |
 | `name` | string | yes      | Alias to remove    |
 
 ```
@@ -146,7 +146,7 @@ GET /api/status
 
 | Param | Type   | Required | Description        |
 |-------|--------|----------|--------------------|
-| `id`  | string | yes      | Device ID or alias |
+| `id`  | string | yes      | Device ID          |
 
 ```
 GET /api/toggle?id=Main Hall
@@ -225,7 +225,7 @@ GET /api/mired?id=dev_1_8&mireds=250
 
 | Param | Type   | Required | Description        |
 |-------|--------|----------|--------------------|
-| `id`  | string | yes      | Device ID or alias |
+| `id`  | string | yes      | Device ID          |
 
 ```bash
 curl -N -H "Accept: text/event-stream" \
