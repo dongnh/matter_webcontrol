@@ -4,7 +4,7 @@
 
 ### New Features
 
-- **MCP server** — New `matter-mcp` command exposes all device operations as MCP tools for LLM integration
+- **MCP server** — New `matter-mcp` command connects to a running HTTP server and exposes all device operations as MCP tools for LLM integration
 - **Toggle** — `GET /api/toggle?id=` to flip device on/off without specifying brightness
 - **Batch control** — `POST /api/batch` to control multiple devices in one request
 - **Status summary** — `GET /api/status` returns quick counts (lights on/off, sensors, bridges)
