@@ -1,157 +1,138 @@
+import hashlib
+import io
 import json
 import os
 import sys
-import io
 import urllib.request
 from contextlib import redirect_stdout
-from typing import Dict, Any, Optional
-import hashlib
+from typing import Any, Dict, Optional
+
 
 class LogicalBridgeClient:
+    """HTTP client for a remote Matter Web Controller bridge."""
+
     def __init__(self, host: str, port: int):
-        # Initialize connection parameters
+        self.host = host
+        self.port = port
         self.metadata_url = f"http://{host}:{port}/api/metadata"
         self.metadata: Dict[str, Any] = {}
         self.devices: Dict[str, Any] = {}
 
     def fetch_metadata(self) -> None:
-        # Retrieve JSON metadata schema
         req = urllib.request.Request(self.metadata_url)
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
             self.metadata = data
             self.devices = {dev["node_id"]: dev for dev in data.get("devices", [])}
 
     def execute_event(self, endpoint_id: str, event_name: str, *args) -> Optional[str]:
-        # Execute embedded Python script for the hardware event
+        """Run the embedded Python script for a device event."""
         device = self.devices.get(endpoint_id)
         if not device or event_name not in device.get("events", {}):
             raise ValueError("Target endpoint_id or event_name not found.")
 
         script = device["events"][event_name].get("script")
-        
-        # Override sys.argv safely
-        original_argv = sys.argv[:]
-        sys.argv = ["virtual_script"] + [str(arg) for arg in args]
 
-        output_buffer = io.StringIO()
+        original_argv = sys.argv[:]
+        sys.argv = ["virtual_script"] + [str(a) for a in args]
+
+        buf = io.StringIO()
         try:
-            with redirect_stdout(output_buffer):
+            with redirect_stdout(buf):
                 exec(script, {})
-            return output_buffer.getvalue().strip()
+            return buf.getvalue().strip()
         finally:
             sys.argv = original_argv
 
+
 class LogicalBridgeManager:
+    """Registry of remote logical bridges with persistent cache."""
+
     def __init__(self, cache_file: str = "bridge_cache.json"):
-        # Initialize registry and cache file path
         self.registry: Dict[str, LogicalBridgeClient] = {}
         self.cache_file = cache_file
 
     def load_cache(self) -> None:
-        # Load bridges from persistent storage during startup
         if not os.path.exists(self.cache_file):
             return
         with open(self.cache_file, "r") as f:
-            data = json.load(f)
-            for node_id, config in data.items():
+            for node_id, cfg in json.load(f).items():
                 try:
-                    self.add_bridge(config["ip"], config["port"], save_to_cache=False)
+                    self.add_bridge(cfg["ip"], cfg["port"], persist=False)
                 except Exception:
-                    # Ignore offline bridges during initialization
-                    pass
+                    pass  # skip offline bridges
 
     def _save_cache(self) -> None:
-        # Persist current registry state to local storage
         data = {
-            node_id: {"ip": client.metadata_url.split("//")[1].split(":")[0], 
-                      "port": int(client.metadata_url.split(":")[2].split("/")[0])}
-            for node_id, client in self.registry.items()
+            nid: {"ip": c.host, "port": c.port}
+            for nid, c in self.registry.items()
         }
         with open(self.cache_file, "w") as f:
             json.dump(data, f)
 
-    def add_bridge(self, ip: str, port: int, save_to_cache: bool = True) -> str:
-        # Register a new logical bridge and optionally persist it
+    def add_bridge(self, ip: str, port: int, persist: bool = True) -> str:
         node_id = f"{ip}:{port}"
         client = LogicalBridgeClient(host=ip, port=port)
         client.fetch_metadata()
         self.registry[node_id] = client
-        
-        if save_to_cache:
+
+        if persist:
             self._save_cache()
-            
+
         return node_id
 
     def get_all_devices(self) -> Dict[str, Any]:
-        # Aggregate core identifiers and current states from all registered bridges
+        """Aggregate and normalize device states from all bridges."""
         aggregated = []
+
         for node_id, client in self.registry.items():
-            for endpoint_id, device_info in client.devices.items():
-                
-                # Fetch logical level with error handling
-                logical_level = 0.0
-                if "read_level" in device_info.get("events", {}):
+            for endpoint_id, info in client.devices.items():
+                # Read brightness level
+                level = 0.0
+                if "read_level" in info.get("events", {}):
                     try:
                         result = client.execute_event(endpoint_id, "read_level")
-                        logical_level = float(result) if result else 0.0
+                        level = float(result) if result else 0.0
                     except Exception:
-                        logical_level = 0.0
+                        level = 0.0
 
-                # Data Normalization: Auto-detect scale and clamp to 0-254 range
-                if logical_level > 1.0:
-                    brightness_raw = int(max(0.0, min(254.0, logical_level)))
+                # Normalize to 0-254 range (auto-detect 0-1 vs 0-254 scale)
+                if level > 1.0:
+                    brightness_raw = int(max(0, min(254, level)))
                 else:
-                    brightness_raw = int(max(0.0, min(254.0, logical_level * 254.0)))
+                    brightness_raw = int(max(0, min(254, level * 254)))
 
-                is_on = brightness_raw > 0
-                
-                # Fetch color temperature with error handling
-                color_temperature = 0
-                if "read_color_temperature" in device_info.get("events", {}):
+                # Read color temperature
+                color_temp = 0
+                if "read_color_temperature" in info.get("events", {}):
                     try:
-                        ct_result = client.execute_event(endpoint_id, "read_color_temperature")
-                        color_temperature = int(float(ct_result)) if ct_result else 0
+                        result = client.execute_event(endpoint_id, "read_color_temperature")
+                        color_temp = int(float(result)) if result else 0
                     except Exception:
-                        color_temperature = 0
+                        color_temp = 0
 
-                # Construct safe unique ID
-                raw_id = f"{node_id}_{endpoint_id}"
-                safe_id = "dev_" + hashlib.md5(raw_id.encode()).hexdigest()[:8]
+                # Build device record
+                safe_id = "dev_" + hashlib.md5(f"{node_id}_{endpoint_id}".encode()).hexdigest()[:8]
+                states = {"on_off": brightness_raw > 0, "brightness_raw": brightness_raw}
+                if color_temp > 0:
+                    states["color_temp_mireds"] = color_temp
 
-                # Extract explicit name from metadata, fallback to endpoint_id
-                device_name = device_info.get("name", endpoint_id)
-
-                # Construct states dictionary dynamically
-                device_states = {
-                    "on_off": is_on,
-                    "brightness_raw": brightness_raw
-                }
-                
-                # Omit color_temperature field if the value is 0
-                if color_temperature > 0:
-                    device_states["color_temp_mireds"] = color_temperature
-
-                # Construct record matching the hardware constraints
-                record = {
+                aggregated.append({
                     "id": safe_id,
                     "node_id": node_id,
                     "endpoint_id": endpoint_id,
-                    "states": device_states,
-                    "names": [device_name]
-                }
-                aggregated.append(record)
-                
+                    "states": states,
+                    "names": [info.get("name", endpoint_id)],
+                })
+
         return {"total_devices": len(aggregated), "devices": aggregated}
-    
+
     def refresh_bridges(self) -> int:
-        # Iterate through the registry and fetch updated metadata for each client
-        success_count = 0
-        for node_id, client in self.registry.items():
+        count = 0
+        for client in self.registry.values():
             try:
                 client.fetch_metadata()
-                success_count += 1
+                count += 1
             except Exception:
-                # Ignore unreachable bridges during the refresh cycle
-                pass
-        return success_count
+                pass  # skip unreachable bridges
+        return count
