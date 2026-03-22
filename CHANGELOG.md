@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.24.0
+
+### New Features
+
+- **MCP server** — New `matter-mcp` command exposes all device operations as MCP tools for LLM integration
+- **Toggle** — `GET /api/toggle?id=` to flip device on/off without specifying brightness
+- **Batch control** — `POST /api/batch` to control multiple devices in one request
+- **Status summary** — `GET /api/status` returns quick counts (lights on/off, sensors, bridges)
+- **Remove alias** — `GET /api/name/remove?id=&name=` to delete a device alias
+- **Remove bridge** — `GET /api/bridge/remove?ip=&port=` to unregister a logical bridge
+
+### Architecture
+
+- **Shared core** — Extracted all business logic into `cli/core.py` (`DeviceController` class). Both `server.py` (FastAPI) and `mcp_server.py` (MCP) are thin wrappers with zero duplicated logic.
+
 ## v0.23.0
 
 ### Breaking Changes

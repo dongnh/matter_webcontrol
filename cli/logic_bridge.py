@@ -127,6 +127,14 @@ class LogicalBridgeManager:
 
         return {"total_devices": len(aggregated), "devices": aggregated}
 
+    def remove_bridge(self, ip: str, port: int) -> str:
+        node_id = f"{ip}:{port}"
+        if node_id not in self.registry:
+            raise KeyError(f"Bridge {node_id} not found")
+        del self.registry[node_id]
+        self._save_cache()
+        return node_id
+
     def refresh_bridges(self) -> int:
         count = 0
         for client in self.registry.values():
