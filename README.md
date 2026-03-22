@@ -21,7 +21,21 @@ Python 3.12+
 
 ## Installation
 
-Create a virtual environment and install the package. Dependencies (`aiohttp`, `fastapi`, `home-assistant-chip-core`, etc.) are resolved automatically.
+### From PyPI
+
+```bash
+pip install matter-web-controller
+```
+
+### From source
+
+```bash
+git clone https://github.com/phatdat-dev/matter_webcontrol.git
+cd matter_webcontrol
+pip install .
+```
+
+All dependencies (`aiohttp`, `fastapi`, `home-assistant-chip-core`, `mcp`, etc.) are resolved automatically.
 
 ## Usage
 
