@@ -1,6 +1,6 @@
 # Matter Web Controller
 
-A Python HTTP API server that bridges Matter smart home devices and external logical bridges (e.g., Casambi) into a unified REST interface.
+A Python server that bridges Matter smart home devices and external logical bridges (e.g., Casambi) into a unified REST + MCP interface.
 
 ## Architecture
 
@@ -25,17 +25,27 @@ Create a virtual environment and install the package. Dependencies (`aiohttp`, `
 
 ## Usage
 
+### HTTP Server
+
 ```bash
 sudo matter-srv                          # starts on port 8080
 sudo matter-srv --port 9090              # custom port
 sudo matter-srv --fabric "Home Lab"      # set Matter fabric label
 ```
 
+### MCP Server
+
+```bash
+sudo matter-mcp                          # stdio transport (for LLM clients)
+sudo matter-mcp --port 9090              # custom Matter bridge port
+sudo matter-mcp --fabric "Home Lab"      # with fabric label
+```
+
 > **Note:** `sudo` is recommended because Matter uses BLE and low-level network interfaces that require root privileges for device commissioning and discovery.
 
 | Option     | Default | Description                    |
 |------------|---------|--------------------------------|
-| `--port`   | 8080    | Web server port                |
+| `--port`   | 8080    | Matter bridge port             |
 | `--fabric` | _(none)_| Matter fabric label            |
 
 The Matter server process binds to `port + 1` automatically.
@@ -100,6 +110,54 @@ GET /api/sensor?id=Motion_Entry
 curl -X POST -H "Content-Type: application/json" \
   -d '{"id": "dev_1_8", "name": "Main Hall"}' \
   http://localhost:8080/api/name
+```
+
+### `GET /api/name/remove` — Remove a device alias
+
+| Param  | Type   | Required | Description        |
+|--------|--------|----------|--------------------|
+| `id`   | string | yes      | Device ID or alias |
+| `name` | string | yes      | Alias to remove    |
+
+```
+GET /api/name/remove?id=dev_a3f7c1b2&name=Main Hall
+```
+
+### `GET /api/status` — Quick device summary
+
+Returns counts: lights on/off, active sensors, connected bridges, total devices.
+
+```
+GET /api/status
+```
+
+### `GET /api/toggle` — Toggle a device on/off
+
+| Param | Type   | Required | Description        |
+|-------|--------|----------|--------------------|
+| `id`  | string | yes      | Device ID or alias |
+
+```
+GET /api/toggle?id=Main Hall
+```
+
+### `GET /api/bridge/remove` — Remove a logical bridge
+
+| Param | Type   | Required | Description         |
+|-------|--------|----------|---------------------|
+| `ip`  | string | yes      | Bridge IPv4 address |
+| `port`| int    | yes      | Bridge port         |
+
+```
+GET /api/bridge/remove?ip=192.168.1.220&port=8000
+```
+
+### `POST /api/batch` — Control multiple devices
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"actions": [{"id": "dev_a1b2", "brightness": 0.5}, {"id": "dev_c3d4", "brightness": 0}]}' \
+  http://localhost:8080/api/batch
 ```
 
 ### `GET /api/register` — Commission a Matter device
@@ -240,3 +298,41 @@ Returns this server's device list with executable Python scripts for each event,
 ```
 
 </details>
+
+## MCP Integration
+
+The `matter-mcp` command exposes all device operations as MCP tools, allowing LLMs to control Matter devices directly.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_devices` | List all devices with states and aliases |
+| `get_lights` | List lights with brightness and temperature |
+| `get_sensors` | List sensors with metrics |
+| `get_sensor` | Get a single sensor by ID/alias |
+| `get_status` | Quick summary (lights on/off, sensors, bridges) |
+| `set_device` | Control brightness and/or color temperature |
+| `toggle` | Toggle device on/off |
+| `set_level` | Set raw brightness (0–254) |
+| `set_mired` | Set color temperature (mireds) |
+| `batch_control` | Control multiple devices at once |
+| `set_name` | Assign alias to device |
+| `remove_name` | Remove alias from device |
+| `add_bridge` | Register logical bridge |
+| `remove_bridge` | Remove logical bridge |
+| `register_device` | Commission new Matter device |
+| `refresh` | Force refresh all states |
+
+### Claude Desktop Configuration
+
+```json
+{
+  "mcpServers": {
+    "matter": {
+      "command": "sudo",
+      "args": ["matter-mcp", "--port", "8080"]
+    }
+  }
+}
+```

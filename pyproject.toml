@@ -18,11 +18,13 @@ dependencies = [
     "cryptography",    
     "python-matter-server",
     "atomicwrites",
-    "zeroconf"    
+    "zeroconf",
+    "mcp[cli]",
 ]
 
 [project.scripts]
 matter-srv = "cli.server:main"
+matter-mcp = "cli.mcp_server:main"
 
 [tool.isort]
 profile = "black"
