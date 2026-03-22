@@ -35,18 +35,29 @@ sudo matter-srv --fabric "Home Lab"      # set Matter fabric label
 
 ### MCP Server
 
+The MCP server connects to a running `matter-srv` instance via HTTP.
+
 ```bash
-sudo matter-mcp                          # stdio transport (for LLM clients)
-sudo matter-mcp --port 9090              # custom Matter bridge port
-sudo matter-mcp --fabric "Home Lab"      # with fabric label
+matter-mcp                               # connects to localhost:8080
+matter-mcp --host 192.168.1.10           # remote server
+matter-mcp --port 9090                   # custom port
 ```
 
 > **Note:** `sudo` is recommended because Matter uses BLE and low-level network interfaces that require root privileges for device commissioning and discovery.
 
+**HTTP server options:**
+
 | Option     | Default | Description                    |
 |------------|---------|--------------------------------|
-| `--port`   | 8080    | Matter bridge port             |
+| `--port`   | 8080    | Web server port                |
 | `--fabric` | _(none)_| Matter fabric label            |
+
+**MCP server options:**
+
+| Option     | Default     | Description                    |
+|------------|-------------|--------------------------------|
+| `--host`   | `localhost` | HTTP server host               |
+| `--port`   | 8080        | HTTP server port               |
 
 The Matter server process binds to `port + 1` automatically.
 
@@ -301,7 +312,7 @@ Returns this server's device list with executable Python scripts for each event,
 
 ## MCP Integration
 
-The `matter-mcp` command exposes all device operations as MCP tools, allowing LLMs to control Matter devices directly.
+The `matter-mcp` command connects to a running `matter-srv` and exposes its operations as MCP tools, allowing LLMs to control Matter devices directly. Start the HTTP server first, then run the MCP server.
 
 ### Available Tools
 
@@ -330,8 +341,8 @@ The `matter-mcp` command exposes all device operations as MCP tools, allowing LL
 {
   "mcpServers": {
     "matter": {
-      "command": "sudo",
-      "args": ["matter-mcp", "--port", "8080"]
+      "command": "matter-mcp",
+      "args": ["--host", "localhost", "--port", "8080"]
     }
   }
 }
