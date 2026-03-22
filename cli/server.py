@@ -56,12 +56,12 @@ def _get_params(request: Request, payload, fields: list[str]) -> dict:
 
 
 def _parse_device_id(resolved_id: str) -> tuple[int, int]:
-    """Parse 'dev_{node}_{endpoint}' into (node_id, endpoint_id)."""
-    try:
-        parts = resolved_id.removeprefix("dev_").split("_")
-        return int(parts[0]), int(parts[1])
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+    """Look up node_id and endpoint_id from the device cache."""
+    if bridge_instance:
+        for dev in bridge_instance.cached_devices:
+            if dev["id"] == resolved_id:
+                return dev["node_id"], dev["endpoint_id"]
+    raise HTTPException(status_code=404, detail="Physical device not found in cache")
 
 
 def _find_device_state(resolved_id: str, key: str):
@@ -138,8 +138,10 @@ async def lifespan(app: FastAPI):
     global bridge_instance
     port = getattr(app.state, "port", 8080)
 
+    fabric_label = getattr(app.state, "fabric_label", None)
+
     bridge_instance = MatterBridgeServer(port)
-    await bridge_instance.initialize(app)
+    await bridge_instance.initialize(app, fabric_label=fabric_label)
 
     logical_manager.load_cache()
 
@@ -616,9 +618,11 @@ async def metadata_api(request: Request):
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
+    parser.add_argument("--fabric", type=str, default=None, help="Matter fabric label")
     args = parser.parse_args()
 
     app.state.port = args.port
+    app.state.fabric_label = args.fabric
     uvicorn.run(app, host="0.0.0.0", port=args.port)
 
 
