@@ -11,9 +11,14 @@
 - **Remove alias** — `GET /api/name/remove?id=&name=` to delete a device alias
 - **Remove bridge** — `GET /api/bridge/remove?ip=&port=` to unregister a logical bridge
 
+### Breaking Changes
+
+- **Aliases are display-only** — All API endpoints now require the canonical `dev_*` device ID. Aliases set via `/api/name` are no longer resolved as IDs.
+
 ### Architecture
 
 - **Shared core** — Extracted all business logic into `cli/core.py` (`DeviceController` class). Both `server.py` (FastAPI) and `mcp_server.py` (MCP) are thin wrappers with zero duplicated logic.
+- **MCP as HTTP client** — `matter-mcp` connects to a running `matter-srv` via HTTP instead of initializing its own Matter bridge. Supports `--host` and `--port` options.
 
 ## v0.23.0
 
