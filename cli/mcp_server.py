@@ -72,7 +72,7 @@ def get_sensors() -> list[dict]:
 
 @mcp.tool()
 def get_sensor(id: str) -> dict:
-    """Get a single sensor's data by device ID or alias."""
+    """Get a single sensor's data by device ID."""
     return _get("/api/sensor", {"id": id})
 
 
@@ -122,7 +122,7 @@ def batch_control(actions: list[dict]) -> list[dict]:
 
 @mcp.tool()
 def set_name(id: str, name: str) -> dict:
-    """Assign an alias to a device. Aliases can be used in place of device IDs."""
+    """Assign a display alias to a device. Aliases are for display only, not for ID resolution."""
     return _post("/api/name", {"id": id, "name": name})
 
 

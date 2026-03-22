@@ -33,7 +33,7 @@ class DeviceController:
     # -- Private helpers -----------------------------------------------------
 
     def _resolve(self, device_id: str) -> str:
-        return self.bridge.resolve_id(device_id)
+        return device_id
 
     def _find_physical(self, resolved_id: str) -> dict | None:
         for dev in self.bridge.cached_devices:
