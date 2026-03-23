@@ -30,7 +30,7 @@ pip install matter-web-controller
 ### From source
 
 ```bash
-git clone https://github.com/phatdat-dev/matter_webcontrol.git
+git clone https://github.com/dongnh/matter_webcontrol.git
 cd matter_webcontrol
 pip install .
 ```
