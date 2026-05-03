@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 
 from aiohttp import ClientSession
@@ -67,24 +68,11 @@ class MatterBridgeServer:
     def _save_names_cache(self):
         self._save_json("names_cache.json", self.device_names)
 
-    # -- ID resolution -------------------------------------------------------
-
-    def resolve_id(self, identifier: str) -> str | None:
-        """Resolve a device name/alias to its canonical dev_* ID."""
-        if not identifier:
-            return None
-        if identifier.startswith("dev_"):
-            return identifier
-        for dev_id, names in self.device_names.items():
-            if identifier in names:
-                return dev_id
-        return identifier
-
     # -- Process lifecycle ---------------------------------------------------
 
     async def start_process(self):
         self.process = await asyncio.create_subprocess_exec(
-            "python3", "-m", "matter_server.server",
+            sys.executable, "-m", "matter_server.server",
             "--storage-path", "./matter_storage",
             "--port", str(self.matter_port),
         )
@@ -104,21 +92,29 @@ class MatterBridgeServer:
 
     async def initialize(self, app, fabric_label: str | None = None):
         await self.start_process()
-        if await self.establish_connection():
-            self.listen_task = asyncio.create_task(self.client.start_listening())
-            self.client.subscribe_events(self._on_event, EventType.ATTRIBUTE_UPDATED)
-
-            if fabric_label:
-                try:
-                    await self.client.send_command("set_fabric_label", label=fabric_label)
-                    logging.info(f"Fabric label set to: {fabric_label}")
-                except Exception as e:
-                    logging.warning(f"Failed to set fabric label: {e}")
-
-            self._update_cache()
-            logging.info("Matter bridge is fully operational.")
-        else:
+        if not await self.establish_connection():
             logging.error("Failed to connect to Matter server.")
+            return
+
+        init_ready = asyncio.Event()
+        self.listen_task = asyncio.create_task(self.client.start_listening(init_ready))
+        try:
+            await asyncio.wait_for(init_ready.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            logging.error("Matter client did not finish initial sync in time.")
+            return
+
+        self.client.subscribe_events(self._on_event, EventType.ATTRIBUTE_UPDATED)
+
+        if fabric_label:
+            try:
+                await self.client.send_command("set_default_fabric_label", label=fabric_label)
+                logging.info(f"Fabric label set to: {fabric_label}")
+            except Exception as e:
+                logging.warning(f"Failed to set fabric label: {e}")
+
+        self._update_cache()
+        logging.info("Matter bridge is fully operational.")
 
     async def shutdown(self, app):
         if self.listen_task:
@@ -198,10 +194,8 @@ class MatterBridgeServer:
         occupancy_updated = False
 
         for node in self.client.get_nodes():
-            device_id, unique_id = self._get_stable_id(node, 0)  # resolve once per node
-
             for ep_id, endpoint in node.endpoints.items():
-                device_id, _ = self._get_stable_id(node, ep_id)
+                device_id, unique_id = self._get_stable_id(node, ep_id)
                 states = {}
 
                 # On/Off cluster

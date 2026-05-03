@@ -32,10 +32,12 @@ cli/
 ## How to run
 
 ```bash
-# HTTP server (requires sudo for Matter BLE/network)
-sudo matter-srv --port 8080 --fabric "My Fabric"
+# HTTP server — no sudo needed when devices are already on the LAN.
+# BLE commissioning of new devices may need bluetooth group / capabilities on Linux.
+export MATTER_SRV_KEY=$(openssl rand -hex 32)
+matter-srv --port 8080 --fabric "My Fabric"
 
-# MCP server (connects to running HTTP server)
+# MCP server (connects to running HTTP server, picks up MATTER_SRV_KEY)
 matter-mcp --host localhost --port 8080
 ```
 

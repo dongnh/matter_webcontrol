@@ -216,3 +216,10 @@ bridge_cache.json
 *.cache.txt
 *.cache.json
 /.claude
+
+# Matter fabric storage (contains pairing keys — never commit)
+/matter_storage/
+/bridge_cache_dev*.json
+
+# Dev test logs
+/dev/logs/

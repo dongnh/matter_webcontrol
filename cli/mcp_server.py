@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -24,6 +25,11 @@ mcp = FastMCP("matter-webcontrol")
 
 # Set via CLI args before mcp.run()
 _base_url: str = "http://localhost:8080"
+_api_key: str | None = None
+
+
+def _auth_headers() -> dict:
+    return {"X-API-Key": _api_key} if _api_key else {}
 
 
 def _get(path: str, params: dict | None = None) -> dict | list:
@@ -33,7 +39,7 @@ def _get(path: str, params: dict | None = None) -> dict | list:
         clean = {k: v for k, v in params.items() if v is not None}
         if clean:
             url += "?" + urllib.parse.urlencode(clean)
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers=_auth_headers())
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -42,8 +48,8 @@ def _post(path: str, body: dict) -> dict | list:
     """HTTP POST JSON to the matter-srv server."""
     url = f"{_base_url}{path}"
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
+    headers = {"Content-Type": "application/json", **_auth_headers()}
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -133,9 +139,9 @@ def remove_name(id: str, name: str) -> dict:
 
 
 @mcp.tool()
-def add_bridge(ip: str, port: int) -> dict:
-    """Register a remote logical bridge by IP and port."""
-    return _get("/api/bridge", {"ip": ip, "port": str(port)})
+def add_bridge(ip: str, port: int, api_key: str | None = None) -> dict:
+    """Register a remote logical bridge by IP and port. Optional api_key for authenticated peers."""
+    return _get("/api/bridge", {"ip": ip, "port": str(port), "api_key": api_key})
 
 
 @mcp.tool()
@@ -161,14 +167,17 @@ def refresh() -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    global _base_url
+    global _base_url, _api_key
 
     parser = argparse.ArgumentParser(description="Matter MCP Server (HTTP client)")
     parser.add_argument("--host", type=str, default="localhost", help="Matter HTTP server host")
     parser.add_argument("--port", type=int, default=8080, help="Matter HTTP server port")
+    parser.add_argument("--api-key", type=str, default=os.environ.get("MATTER_SRV_KEY"),
+                        help="X-API-Key header for the matter-srv (or set MATTER_SRV_KEY env var)")
     args = parser.parse_args()
 
     _base_url = f"http://{args.host}:{args.port}"
+    _api_key = args.api_key
     logging.info(f"MCP server connecting to {_base_url}")
     mcp.run()
 

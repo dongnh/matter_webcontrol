@@ -42,14 +42,17 @@ All dependencies (`aiohttp`, `fastapi`, `home-assistant-chip-core`, `mcp`, etc.)
 ### HTTP Server
 
 ```bash
-sudo matter-srv                          # starts on port 8080
-sudo matter-srv --port 9090              # custom port
-sudo matter-srv --fabric "Home Lab"      # set Matter fabric label
+export MATTER_SRV_KEY=$(openssl rand -hex 32)
+matter-srv                               # binds 127.0.0.1:8080
+matter-srv --port 9090                   # custom port
+matter-srv --host 0.0.0.0                # expose on LAN (api-key required)
+matter-srv --fabric "Home Lab"           # set Matter fabric label
 ```
 
 ### MCP Server
 
-The MCP server connects to a running `matter-srv` instance via HTTP.
+The MCP server connects to a running `matter-srv` instance via HTTP. It picks
+up `MATTER_SRV_KEY` automatically.
 
 ```bash
 matter-mcp                               # connects to localhost:8080
@@ -57,7 +60,17 @@ matter-mcp --host 192.168.1.10           # remote server
 matter-mcp --port 9090                   # custom port
 ```
 
-> **Note:** `sudo` is recommended because Matter uses BLE and low-level network interfaces that require root privileges for device commissioning and discovery.
+### Privileges
+
+`sudo` is **not** required for normal operation when devices are already on the
+LAN. Matter operational traffic uses ordinary UDP/IPv6 — no raw sockets, no BLE.
+
+| Scenario | Privilege needed |
+|---|---|
+| macOS, devices on LAN | None. Run as your user. |
+| Linux, devices on LAN | None, or `setcap 'cap_net_raw,cap_net_admin+eip' $(readlink -f venv/bin/python3)` if multicast/mDNS conflicts. |
+| BLE commissioning of new devices (Linux) | `bluetooth` group + capabilities, or `sudo`. |
+| BLE commissioning (macOS) | None — system prompts for Bluetooth permission on first use. |
 
 **HTTP server options:**
 

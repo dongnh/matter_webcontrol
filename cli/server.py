@@ -2,12 +2,13 @@ import argparse
 import asyncio
 import datetime
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from cli.core import DeviceController
@@ -16,7 +17,7 @@ from cli.matter_bridge import MatterBridgeServer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-controller: DeviceController = None
+controller: Optional[DeviceController] = None
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -111,6 +112,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Matter Web Controller", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    api_key = getattr(app.state, "api_key", None)
+    if api_key and request.headers.get("X-API-Key") != api_key:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -159,8 +168,8 @@ async def remove_name_api(id: str, name: str):
 
 
 @app.get("/api/bridge")
-async def add_bridge_api(ip: str, port: int):
-    return _wrap(controller.add_bridge, ip, port)
+async def add_bridge_api(ip: str, port: int, api_key: Optional[str] = None):
+    return _wrap(controller.add_bridge, ip, port, api_key)
 
 
 @app.get("/api/bridge/remove")
@@ -223,13 +232,19 @@ async def subscribe_api(request: Request, id: str):
     controller.bridge.occupancy_subscribers[resolved].append(queue)
 
     async def stream():
+        import json as _json
         try:
             while True:
                 if await request.is_disconnected():
                     break
-                state, ts = await queue.get()
+                try:
+                    state, ts = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
                 iso = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat()
-                yield f'data: {{"id": "{resolved}", "occupancy": {state}, "timestamp": "{iso}"}}\n\n'
+                payload = _json.dumps({"id": resolved, "occupancy": state, "timestamp": iso})
+                yield f"data: {payload}\n\n"
         except asyncio.CancelledError:
             pass
         finally:
@@ -259,12 +274,24 @@ async def metadata_api(request: Request):
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
+    parser.add_argument("--host", type=str, default="127.0.0.1",
+                        help="Bind address (default: 127.0.0.1; use 0.0.0.0 to expose on LAN)")
     parser.add_argument("--fabric", type=str, default=None, help="Matter fabric label")
+    parser.add_argument("--api-key", type=str, default=os.environ.get("MATTER_SRV_KEY"),
+                        help="Require X-API-Key header (or set MATTER_SRV_KEY env var)")
     args = parser.parse_args()
+
+    if args.host != "127.0.0.1" and not args.api_key:
+        logging.warning(
+            "Server bound to %s without --api-key. Anyone on the network can control "
+            "your devices and commission new ones. Set MATTER_SRV_KEY or pass --api-key.",
+            args.host,
+        )
 
     app.state.port = args.port
     app.state.fabric_label = args.fabric
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    app.state.api_key = args.api_key
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

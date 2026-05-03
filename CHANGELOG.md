@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.25.0
+
+### Breaking Changes
+
+- **Federation no longer uses embedded scripts** — `/api/metadata` no longer returns Python `events.{name}.script` blobs. Peers now call the standard REST API (`/api/devices`, `/api/level`, `/api/mired`, `/api/set`) directly. Closes a remote-code-execution risk where a malicious or MITM'd peer could inject arbitrary Python via `exec()`.
+- **Default bind address is `127.0.0.1`** — previously `0.0.0.0`. Pass `--host 0.0.0.0` to expose on the LAN; doing so without `--api-key` now logs a warning.
+- **`/api/metadata` schema** — emits `capabilities` and `states` per device instead of `events`. New `bridge.api_version: "2"` marker.
+- **`register_device` response** — returns `assigned_id` (the dev_* the alias was applied to) instead of `pending_name`.
+
+### New Features
+
+- **API authentication** — `--api-key` flag (or `MATTER_SRV_KEY` env var) requires `X-API-Key` header on all requests. MCP server and federation client both forward the header automatically.
+- **Federation auth pass-through** — `/api/bridge?ip=&port=&api_key=` and `add_bridge` MCP tool accept the remote's API key, stored in `bridge_cache.json`.
+- **SSE keepalive** — `/api/subscribe` emits a comment frame every 15s, so client disconnects are detected even when no occupancy events fire.
+
+### Improvements
+
+- **Logical-first routing** — `_find_state`, `get_sensor` now check logical bridges before physical (matches architecture rule). Previously inconsistent.
+- **Parallel batch** — `/api/batch` now dispatches via `asyncio.gather` instead of sequential await.
+- **Mireds clamping** — color temperature requests clamped to Matter spec range [153, 500].
+- **`get_status` dedup** — devices appearing on both physical and logical (federation loop) counted once.
+- **Logical bridge cache** — `LogicalBridgeClient.refresh()` pulls once; `get_all_devices()` reads from memory. Eliminates per-call HTTP fan-out.
+- **Atomic + resilient cache** — `bridge_cache.json` written via tmp + `os.replace`; corrupt file no longer crashes startup.
+- **Error semantics** — `_parse_id` now raises `KeyError` (404) for "device not found" instead of `ValueError` (400).
+
 ## v0.24.0
 
 ### New Features

@@ -1,48 +1,75 @@
-import hashlib
-import io
+"""HTTP federation client for remote Matter Web Controller instances.
+
+Each remote bridge exposes the same REST API as the local server. This module
+calls those endpoints directly — no embedded scripts, no code execution.
+"""
+
 import json
 import os
-import sys
+import urllib.error
+import urllib.parse
 import urllib.request
-from contextlib import redirect_stdout
 from typing import Any, Dict, Optional
 
 
 class LogicalBridgeClient:
-    """HTTP client for a remote Matter Web Controller bridge."""
+    """REST client for a remote Matter Web Controller."""
 
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, api_key: Optional[str] = None):
         self.host = host
         self.port = port
-        self.metadata_url = f"http://{host}:{port}/api/metadata"
-        self.metadata: Dict[str, Any] = {}
-        self.devices: Dict[str, Any] = {}
+        self.api_key = api_key
+        self.base_url = f"http://{host}:{port}"
+        self.devices: Dict[str, Dict[str, Any]] = {}
 
-    def fetch_metadata(self) -> None:
-        req = urllib.request.Request(self.metadata_url)
+    def _request(
+        self,
+        path: str,
+        method: str = "GET",
+        query: Optional[dict] = None,
+        body: Optional[dict] = None,
+    ) -> Any:
+        url = f"{self.base_url}{path}"
+        if query:
+            clean = {k: v for k, v in query.items() if v is not None}
+            if clean:
+                url += "?" + urllib.parse.urlencode(clean)
+
+        data = None
+        headers: Dict[str, str] = {}
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            self.metadata = data
-            self.devices = {dev["node_id"]: dev for dev in data.get("devices", [])}
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else None
 
-    def execute_event(self, endpoint_id: str, event_name: str, *args) -> Optional[str]:
-        """Run the embedded Python script for a device event."""
-        device = self.devices.get(endpoint_id)
-        if not device or event_name not in device.get("events", {}):
-            raise ValueError("Target endpoint_id or event_name not found.")
+    def refresh(self) -> None:
+        """Pull device list from the remote and cache it locally."""
+        data = self._request("/api/devices")
+        self.devices = {dev["id"]: dev for dev in data if "id" in dev}
 
-        script = device["events"][event_name].get("script")
+    def set_level(self, device_id: str, level: int) -> None:
+        self._request(
+            "/api/level", method="POST",
+            body={"id": device_id, "level": int(level)},
+        )
 
-        original_argv = sys.argv[:]
-        sys.argv = ["virtual_script"] + [str(a) for a in args]
+    def set_mired(self, device_id: str, mireds: int) -> None:
+        self._request(
+            "/api/mired", method="POST",
+            body={"id": device_id, "mireds": int(mireds)},
+        )
 
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                exec(script, {})
-            return buf.getvalue().strip()
-        finally:
-            sys.argv = original_argv
+    def set_brightness(self, device_id: str, brightness: float) -> None:
+        self._request(
+            "/api/set", method="POST",
+            body={"id": device_id, "brightness": float(brightness)},
+        )
 
 
 class LogicalBridgeManager:
@@ -55,77 +82,44 @@ class LogicalBridgeManager:
     def load_cache(self) -> None:
         if not os.path.exists(self.cache_file):
             return
-        with open(self.cache_file, "r") as f:
-            for node_id, cfg in json.load(f).items():
-                try:
-                    self.add_bridge(cfg["ip"], cfg["port"], persist=False)
-                except Exception:
-                    pass  # skip offline bridges
+        try:
+            with open(self.cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        for cfg in data.values():
+            try:
+                self.add_bridge(
+                    cfg["ip"], int(cfg["port"]),
+                    api_key=cfg.get("api_key"), persist=False,
+                )
+            except Exception:
+                pass  # skip offline bridges
 
     def _save_cache(self) -> None:
         data = {
-            nid: {"ip": c.host, "port": c.port}
+            nid: {"ip": c.host, "port": c.port, "api_key": c.api_key}
             for nid, c in self.registry.items()
         }
-        with open(self.cache_file, "w") as f:
+        tmp = self.cache_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
+        os.replace(tmp, self.cache_file)
 
-    def add_bridge(self, ip: str, port: int, persist: bool = True) -> str:
+    def add_bridge(
+        self,
+        ip: str,
+        port: int,
+        api_key: Optional[str] = None,
+        persist: bool = True,
+    ) -> str:
         node_id = f"{ip}:{port}"
-        client = LogicalBridgeClient(host=ip, port=port)
-        client.fetch_metadata()
+        client = LogicalBridgeClient(ip, port, api_key)
+        client.refresh()
         self.registry[node_id] = client
-
         if persist:
             self._save_cache()
-
         return node_id
-
-    def get_all_devices(self) -> Dict[str, Any]:
-        """Aggregate and normalize device states from all bridges."""
-        aggregated = []
-
-        for node_id, client in self.registry.items():
-            for endpoint_id, info in client.devices.items():
-                # Read brightness level
-                level = 0.0
-                if "read_level" in info.get("events", {}):
-                    try:
-                        result = client.execute_event(endpoint_id, "read_level")
-                        level = float(result) if result else 0.0
-                    except Exception:
-                        level = 0.0
-
-                # Normalize to 0-254 range (auto-detect 0-1 vs 0-254 scale)
-                if level > 1.0:
-                    brightness_raw = int(max(0, min(254, level)))
-                else:
-                    brightness_raw = int(max(0, min(254, level * 254)))
-
-                # Read color temperature
-                color_temp = 0
-                if "read_color_temperature" in info.get("events", {}):
-                    try:
-                        result = client.execute_event(endpoint_id, "read_color_temperature")
-                        color_temp = int(float(result)) if result else 0
-                    except Exception:
-                        color_temp = 0
-
-                # Build device record
-                safe_id = "dev_" + hashlib.md5(f"{node_id}_{endpoint_id}".encode()).hexdigest()[:8]
-                states = {"on_off": brightness_raw > 0, "brightness_raw": brightness_raw}
-                if color_temp > 0:
-                    states["color_temp_mireds"] = color_temp
-
-                aggregated.append({
-                    "id": safe_id,
-                    "node_id": node_id,
-                    "endpoint_id": endpoint_id,
-                    "states": states,
-                    "names": [info.get("name", endpoint_id)],
-                })
-
-        return {"total_devices": len(aggregated), "devices": aggregated}
 
     def remove_bridge(self, ip: str, port: int) -> str:
         node_id = f"{ip}:{port}"
@@ -139,8 +133,22 @@ class LogicalBridgeManager:
         count = 0
         for client in self.registry.values():
             try:
-                client.fetch_metadata()
+                client.refresh()
                 count += 1
             except Exception:
                 pass  # skip unreachable bridges
         return count
+
+    def get_all_devices(self) -> Dict[str, Any]:
+        """Return cached device list across all bridges (no HTTP per call)."""
+        aggregated = []
+        for node_id, client in self.registry.items():
+            for dev in client.devices.values():
+                aggregated.append({
+                    "id": dev["id"],
+                    "node_id": node_id,
+                    "endpoint_id": dev.get("endpoint_id"),
+                    "states": dev.get("states", {}),
+                    "names": dev.get("names", []),
+                })
+        return {"total_devices": len(aggregated), "devices": aggregated}

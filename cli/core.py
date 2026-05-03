@@ -3,6 +3,7 @@
 Both the FastAPI server and MCP server import DeviceController from here.
 """
 
+import asyncio
 import datetime
 import logging
 from typing import Optional
@@ -13,6 +14,7 @@ from cli.logic_bridge import LogicalBridgeManager
 from cli.matter_bridge import MatterBridgeServer
 
 SENSOR_KEYS = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
+MIRED_MIN, MIRED_MAX = 153, 500  # Matter ColorControl spec range
 
 
 def extract_matter_pin(setup_code: str) -> int:
@@ -49,19 +51,20 @@ class DeviceController:
         return None, None
 
     def _find_state(self, resolved_id: str, key: str):
-        phys = self._find_physical(resolved_id)
-        if phys and key in phys.get("states", {}):
-            return phys["states"][key]
+        # Logical-first per architecture rule
         for dev in self.logical.get_all_devices().get("devices", []):
             if dev["id"] == resolved_id and key in dev.get("states", {}):
                 return dev["states"][key]
+        phys = self._find_physical(resolved_id)
+        if phys and key in phys.get("states", {}):
+            return phys["states"][key]
         return None
 
     def _parse_id(self, resolved_id: str) -> tuple[int, int]:
         phys = self._find_physical(resolved_id)
         if phys:
             return phys["node_id"], phys["endpoint_id"]
-        raise ValueError("Physical device not found in cache")
+        raise KeyError(f"Physical device {resolved_id} not found in cache")
 
     def _verify_hardware(self):
         if not self.bridge or not self.bridge.is_ready():
@@ -149,6 +152,13 @@ class DeviceController:
 
     def get_sensor(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
+        # Logical-first
+        for dev in self.logical.get_all_devices().get("devices", []):
+            if dev["id"] == resolved:
+                entry = self._build_sensor(dev, dev.get("names", []))
+                if entry:
+                    return entry
+                raise ValueError("Device exists but contains no sensor clusters")
         for dev in self.bridge.cached_devices:
             if dev["id"] != resolved:
                 continue
@@ -173,29 +183,32 @@ class DeviceController:
         raise KeyError("Device not found or color temperature unsupported")
 
     def get_status(self) -> dict:
-        """Quick summary of all device states."""
+        """Quick summary of all device states. Deduplicates federation loops by id."""
         lights_on = 0
         lights_off = 0
         sensors_active = 0
+        seen: set[str] = set()
 
         for dev in self._all_devices_raw():
+            dev_id = dev.get("id")
+            if not dev_id or dev_id in seen:
+                continue
+            seen.add(dev_id)
             states = dev.get("states", {})
             if "on_off" in states or "brightness_raw" in states:
                 if states.get("on_off"):
                     lights_on += 1
                 else:
                     lights_off += 1
-            for k in SENSOR_KEYS:
-                if k in states:
-                    sensors_active += 1
-                    break
+            if any(k in states for k in SENSOR_KEYS):
+                sensors_active += 1
 
         return {
             "lights_on": lights_on,
             "lights_off": lights_off,
             "sensors_active": sensors_active,
             "logical_bridges": len(self.logical.registry),
-            "total_devices": lights_on + lights_off + sensors_active,
+            "total_devices": len(seen),
         }
 
     # -- Control -------------------------------------------------------------
@@ -211,10 +224,10 @@ class DeviceController:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
             if brightness is not None:
-                level = int(max(0.0, min(1.0, brightness)) * 254)
-                client.execute_event(target["endpoint_id"], "set_level", str(level))
+                client.set_brightness(target["id"], max(0.0, min(1.0, brightness)))
             if temperature is not None and temperature > 0:
-                client.execute_event(target["endpoint_id"], "set_color_temperature", str(int(1_000_000 / temperature)))
+                mireds = max(MIRED_MIN, min(MIRED_MAX, int(1_000_000 / temperature)))
+                client.set_mired(target["id"], mireds)
             return {"status": "success", "id": resolved, "type": "logical"}
 
         # Physical device
@@ -232,8 +245,9 @@ class DeviceController:
             await self.bridge.client.send_device_command(node_id, endpoint_id, cmd)
 
         if temperature is not None and temperature > 0:
+            mireds = max(MIRED_MIN, min(MIRED_MAX, int(1_000_000 / temperature)))
             cmd = Clusters.ColorControl.Commands.MoveToColorTemperature(
-                colorTemperatureMireds=int(1_000_000 / temperature),
+                colorTemperatureMireds=mireds,
                 transitionTime=0, optionsMask=0, optionsOverride=0,
             )
             await self.bridge.client.send_device_command(node_id, endpoint_id, cmd)
@@ -257,7 +271,7 @@ class DeviceController:
         if target:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
-            client.execute_event(target["endpoint_id"], "set_level", str(level))
+            client.set_level(target["id"], level)
             return {"status": "success", "id": resolved, "level": level, "type": "logical"}
 
         self._verify_hardware()
@@ -272,12 +286,13 @@ class DeviceController:
 
     async def set_mired(self, device_id: str, mireds: int) -> dict:
         resolved = self._resolve(device_id)
+        mireds = max(MIRED_MIN, min(MIRED_MAX, int(mireds)))
 
         target, client = self._find_logical(resolved)
         if target:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
-            client.execute_event(target["endpoint_id"], "set_color_temperature", str(mireds))
+            client.set_mired(target["id"], mireds)
             return {"status": "success", "id": resolved, "mireds": mireds, "type": "logical"}
 
         self._verify_hardware()
@@ -290,18 +305,17 @@ class DeviceController:
         return {"status": "success", "id": resolved, "mireds": mireds, "type": "physical"}
 
     async def batch_control(self, actions: list[dict]) -> list[dict]:
-        results = []
-        for action in actions:
+        async def run(action: dict) -> dict:
             try:
-                r = await self.set_device(
+                return await self.set_device(
                     action["id"],
                     brightness=action.get("brightness"),
                     temperature=action.get("temperature"),
                 )
-                results.append(r)
             except Exception as e:
-                results.append({"status": "error", "id": action.get("id"), "detail": str(e)})
-        return results
+                return {"status": "error", "id": action.get("id"), "detail": str(e)}
+
+        return await asyncio.gather(*(run(a) for a in actions))
 
     # -- Management ----------------------------------------------------------
 
@@ -333,8 +347,8 @@ class DeviceController:
 
         return {"status": "success", "id": resolved, "names": self.bridge.device_names.get(resolved, [])}
 
-    def add_bridge(self, ip: str, port: int) -> dict:
-        node_id = self.logical.add_bridge(ip, port)
+    def add_bridge(self, ip: str, port: int, api_key: Optional[str] = None) -> dict:
+        node_id = self.logical.add_bridge(ip, port, api_key=api_key)
         return {"status": "success", "message": f"Registered logical bridge {node_id}"}
 
     def remove_bridge(self, ip: str, port: int) -> dict:
@@ -350,8 +364,26 @@ class DeviceController:
                 "commission_on_network", setup_pin_code=pin, ip_address=ip
             )
         else:
-            await self.bridge.client.send_command("commission_with_code", code=code)
-        return {"status": "success", "code": code, "ip": ip, "pending_name": name}
+            # network_only=True: discover via mDNS on LAN, no BLE required.
+            await self.bridge.client.send_command(
+                "commission_with_code", code=code, network_only=True
+            )
+
+        # Persist alias to whichever new device showed up
+        assigned = None
+        if name:
+            self.bridge._update_cache()
+            existing_ids = {d["id"] for d in self.bridge.cached_devices}
+            # Pick the device that appeared after commission (heuristic: not already named)
+            for dev in self.bridge.cached_devices:
+                if dev["id"] in existing_ids and dev["id"] not in self.bridge.device_names:
+                    try:
+                        self.set_name(dev["id"], name)
+                        assigned = dev["id"]
+                        break
+                    except ValueError:
+                        continue
+        return {"status": "success", "code": code, "ip": ip, "assigned_id": assigned, "name": name}
 
     def refresh(self) -> dict:
         matter_status = "skipped"
@@ -367,11 +399,14 @@ class DeviceController:
         return {"status": "success", "message": f"Refreshed {count} logical bridges. Matter: {matter_status}"}
 
     def get_metadata(self, host: str, port: int) -> dict:
-        base = f"http://{host}:{port}"
-        all_devs = self._all_devices_raw()
+        """Declarative bridge metadata for federation discovery.
 
+        Federation peers consume the device list via /api/devices and call
+        /api/level, /api/mired, /api/set directly — this endpoint is purely
+        informational (capabilities + current states).
+        """
         metadata = []
-        for dev in all_devs:
+        for dev in self._all_devices_raw():
             dev_id = dev.get("id")
             if not dev_id:
                 continue
@@ -382,105 +417,36 @@ class DeviceController:
                     if n not in names:
                         names.append(n)
 
-            name = names[0] if names else dev_id
             states = dev.get("states", {})
+            capabilities = []
+            if "on_off" in states:
+                capabilities.append("on_off")
+            if "brightness_raw" in states:
+                capabilities.append("brightness")
+            if "color_temp_mireds" in states:
+                capabilities.append("color_temperature")
+            if "occupancy" in states:
+                capabilities.append("occupancy")
 
-            has_on_off = "on_off" in states
-            has_brightness = "brightness_raw" in states
-            has_color_temp = "color_temp_mireds" in states
-            has_occupancy = "occupancy" in states
-
-            events = {}
-            hw_type = "unknown"
-
-            if has_occupancy:
+            if "occupancy" in states:
                 hw_type = "occupancy_sensor"
-                events["read_occupancy"] = {
-                    "trigger": "occupancy_sensing_cluster",
-                    "script": (
-                        f"import urllib.request, json\n"
-                        f"response = urllib.request.urlopen('{base}/api/sensor?id={dev_id}')\n"
-                        f"data = json.loads(response.read().decode('utf-8'))\n"
-                        f"print(data.get('occupancy', 0))"
-                    ),
-                }
-                events["subscribe_occupancy"] = {
-                    "trigger": "occupancy_sse_stream",
-                    "script": (
-                        f"import urllib.request\n"
-                        f"response = urllib.request.urlopen('{base}/api/subscribe?id={dev_id}')\n"
-                        f"for line in response:\n"
-                        f"    print(line.decode('utf-8').strip())"
-                    ),
-                }
-            elif has_on_off:
-                if has_color_temp:
-                    hw_type = "color_temperature_light"
-                elif has_brightness:
-                    hw_type = "dimmable_light"
-                else:
-                    hw_type = "on_off_light"
+            elif "color_temp_mireds" in states:
+                hw_type = "color_temperature_light"
+            elif "brightness_raw" in states:
+                hw_type = "dimmable_light"
+            elif "on_off" in states:
+                hw_type = "on_off_light"
+            else:
+                continue
 
-                events["turn_on"] = {
-                    "trigger": "on_off_cluster",
-                    "script": f"import urllib.request\nurllib.request.urlopen('{base}/api/set?id={dev_id}&brightness=1.0')",
-                }
-                events["turn_off"] = {
-                    "trigger": "on_off_cluster",
-                    "script": f"import urllib.request\nurllib.request.urlopen('{base}/api/set?id={dev_id}&brightness=0.0')",
-                }
-
-                if has_brightness or has_color_temp:
-                    events["set_level"] = {
-                        "trigger": "level_control_cluster",
-                        "script": (
-                            f"import sys, urllib.request\n"
-                            f"level = int(sys.argv[1]) if len(sys.argv) > 1 else 254\n"
-                            f"urllib.request.urlopen(f'{base}/api/level?id={dev_id}&level={{level}}')"
-                        ),
-                    }
-                    events["read_level"] = {
-                        "trigger": "level_control_cluster",
-                        "script": (
-                            f"import urllib.request, json\n"
-                            f"try:\n"
-                            f"    response = urllib.request.urlopen('{base}/api/level?id={dev_id}')\n"
-                            f"    data = json.loads(response.read().decode('utf-8'))\n"
-                            f"    print(data.get('level', 0))\n"
-                            f"except Exception:\n"
-                            f"    print(0)"
-                        ),
-                    }
-
-                if has_color_temp:
-                    events["set_color_temperature"] = {
-                        "trigger": "color_control_cluster",
-                        "script": (
-                            f"import sys, urllib.request\n"
-                            f"mireds = int(sys.argv[1]) if len(sys.argv) > 1 else 250\n"
-                            f"urllib.request.urlopen(f'{base}/api/mired?id={dev_id}&mireds={{mireds}}')"
-                        ),
-                    }
-                    events["read_color_temperature"] = {
-                        "trigger": "color_control_cluster",
-                        "script": (
-                            f"import urllib.request, json\n"
-                            f"try:\n"
-                            f"    response = urllib.request.urlopen('{base}/api/mired?id={dev_id}')\n"
-                            f"    data = json.loads(response.read().decode('utf-8'))\n"
-                            f"    print(data.get('mireds', 0))\n"
-                            f"except Exception:\n"
-                            f"    print(0)"
-                        ),
-                    }
-
-            if hw_type != "unknown":
-                metadata.append({
-                    "node_id": dev_id,
-                    "name": name,
-                    "hardware_type": hw_type,
-                    "events": events,
-                })
+            metadata.append({
+                "id": dev_id,
+                "name": names[0] if names else dev_id,
+                "names": names,
+                "hardware_type": hw_type,
+                "capabilities": capabilities,
+                "states": states,
+            })
 
         return {
             "bridge": {
@@ -488,6 +454,7 @@ class DeviceController:
                 "type": "lighting_controller",
                 "network_host": host,
                 "network_port": port,
+                "api_version": "2",
             },
             "devices": metadata,
         }
