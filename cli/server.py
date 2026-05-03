@@ -182,6 +182,11 @@ async def register_api(code: str, ip: Optional[str] = None, name: Optional[str] 
     return await _wrap_async(controller.register_device(code, ip, name))
 
 
+@app.get("/api/unregister")
+async def unregister_api(node_id: int):
+    return await _wrap_async(controller.unregister_node(node_id))
+
+
 @app.api_route("/api/set", methods=["GET", "POST"])
 async def set_device_api(request: Request, payload: Optional[ControlPayload] = None):
     params = _get_params(request, payload, ["id", "brightness", "temperature"])

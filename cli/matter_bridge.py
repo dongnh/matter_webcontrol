@@ -151,6 +151,48 @@ class MatterBridgeServer:
         device_id = f"dev_{hashlib.md5(raw.encode()).hexdigest()[:8]}"
         return device_id, unique_id
 
+    async def dedupe_by_unique_id(self, new_node_id: int) -> list[int]:
+        """Unpair any older fabric node that shares endpoint-0 UniqueID with new_node_id.
+
+        Aqara/Eve hubs keep the same UniqueID across re-pairings, so a re-commission
+        leaves a phantom node and produces duplicate dev_* IDs. Called automatically
+        after register_device(); also exposed via /api/unregister for manual cleanup.
+        """
+        new_node = next(
+            (n for n in self.client.get_nodes() if n.node_id == new_node_id), None
+        )
+        if not new_node or 0 not in new_node.endpoints:
+            return []
+
+        new_uid = (
+            new_node.get_attribute_value(0, 40, 18)
+            or new_node.get_attribute_value(0, 40, 15)
+        )
+        if not new_uid:
+            return []
+
+        removed = []
+        for node in list(self.client.get_nodes()):
+            if node.node_id == new_node_id or 0 not in node.endpoints:
+                continue
+            old_uid = (
+                node.get_attribute_value(0, 40, 18)
+                or node.get_attribute_value(0, 40, 15)
+            )
+            if old_uid == new_uid:
+                logging.warning(
+                    f"Duplicate UniqueID {old_uid} on node {node.node_id} — unpairing"
+                )
+                try:
+                    await self.client.send_command("remove_node", node_id=node.node_id)
+                    removed.append(node.node_id)
+                except Exception as e:
+                    logging.error(f"Failed to unpair node {node.node_id}: {e}")
+
+        if removed:
+            self._update_cache()
+        return removed
+
     def _migrate_ids(self, devices: list[dict]):
         """Migrate cache keys from old dev_{node}_{ep} format to new stable IDs."""
         mapping = {}

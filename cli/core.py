@@ -360,14 +360,24 @@ class DeviceController:
 
         if ip:
             pin = extract_matter_pin(code)
-            await self.bridge.client.send_command(
+            result = await self.bridge.client.send_command(
                 "commission_on_network", setup_pin_code=pin, ip_address=ip
             )
         else:
             # network_only=True: discover via mDNS on LAN, no BLE required.
-            await self.bridge.client.send_command(
+            result = await self.bridge.client.send_command(
                 "commission_with_code", code=code, network_only=True
             )
+
+        new_node_id = None
+        if isinstance(result, dict):
+            new_node_id = result.get("node_id")
+        elif hasattr(result, "node_id"):
+            new_node_id = result.node_id
+
+        deduped: list[int] = []
+        if new_node_id is not None:
+            deduped = await self.bridge.dedupe_by_unique_id(new_node_id)
 
         # Persist alias to whichever new device showed up
         assigned = None
@@ -383,7 +393,22 @@ class DeviceController:
                         break
                     except ValueError:
                         continue
-        return {"status": "success", "code": code, "ip": ip, "assigned_id": assigned, "name": name}
+        return {
+            "status": "success",
+            "code": code,
+            "ip": ip,
+            "node_id": new_node_id,
+            "assigned_id": assigned,
+            "name": name,
+            "deduped_nodes": deduped,
+        }
+
+    async def unregister_node(self, node_id: int) -> dict:
+        """Unpair a fabric node by node_id. Use to clean up phantom entries."""
+        self._verify_hardware()
+        await self.bridge.client.send_command("remove_node", node_id=node_id)
+        self.bridge._update_cache()
+        return {"status": "success", "removed_node_id": node_id}
 
     def refresh(self) -> dict:
         matter_status = "skipped"
