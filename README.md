@@ -113,6 +113,7 @@ Error mapping: `404` (device/alias unknown), `400` (bad parameters), `401` (auth
 | `GET /api/lights` | Lights with normalized brightness (0.0–1.0) and temperature in Kelvin |
 | `GET /api/sensors` | All sensors with their metrics |
 | `GET /api/sensor?id=...` | One sensor by ID |
+| `GET /api/climate` | Temperature (°C) and humidity (%) for every reporting device — thermostat `local_temperature` + standalone temp/humidity sensors. Add `?id=…` for one device. |
 | `GET /api/level?id=...` | Read raw brightness (0–254). Add `&level=N` to set |
 | `GET /api/mired?id=...` | Read color temperature (mireds). Add `&mireds=N` to set |
 | `GET /api/metadata` | Declarative bridge info (capabilities + states), used by federation peers |

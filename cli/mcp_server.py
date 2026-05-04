@@ -83,6 +83,14 @@ def get_sensor(id: str) -> dict:
 
 
 @mcp.tool()
+def get_climate(id: str | None = None) -> list[dict] | dict:
+    """Read temperature (°C) and/or humidity (%) for every device that reports them
+    (Thermostat local_temperature + standalone temp/humidity sensors). If id is given,
+    return one device only. Each entry has `kind` = "thermostat" or "sensor"."""
+    return _get("/api/climate", {"id": id} if id else None)
+
+
+@mcp.tool()
 def get_status() -> dict:
     """Quick summary: how many lights on/off, active sensors, connected bridges, total devices."""
     return _get("/api/status")

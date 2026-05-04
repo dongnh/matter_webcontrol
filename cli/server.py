@@ -150,6 +150,13 @@ async def get_sensor_api(id: str):
     return _wrap(controller.get_sensor, id)
 
 
+@app.get("/api/climate")
+async def climate_api(id: Optional[str] = None):
+    if id:
+        return _wrap(controller.get_climate_one, id)
+    return controller.get_climate()
+
+
 @app.get("/api/status")
 async def get_status_api():
     return controller.get_status()

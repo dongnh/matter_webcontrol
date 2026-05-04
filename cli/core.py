@@ -162,6 +162,59 @@ class DeviceController:
                 sensors.append(entry)
         return sensors
 
+    @staticmethod
+    def _climate_entry(dev: dict, names: list) -> dict | None:
+        states = dev.get("states", {})
+        temp_c = None
+        humidity = None
+        kind = None
+
+        if "local_temperature" in states:
+            temp_c = round(states["local_temperature"] / 100.0, 2)
+            kind = "thermostat"
+        elif "temperature" in states:
+            temp_c = round(states["temperature"] / 100.0, 2)
+            kind = "sensor"
+
+        if "humidity" in states:
+            humidity = round(states["humidity"] / 100.0, 2)
+            kind = kind or "sensor"
+
+        if temp_c is None and humidity is None:
+            return None
+
+        out = {"id": dev["id"], "names": names, "kind": kind}
+        if temp_c is not None:
+            out["temperature"] = temp_c
+        if humidity is not None:
+            out["humidity"] = humidity
+        return out
+
+    def get_climate(self) -> list[dict]:
+        out = []
+        if self.bridge:
+            for dev in self.bridge.cached_devices:
+                entry = self._climate_entry(dev, self._names_for(dev["id"]))
+                if entry:
+                    out.append(entry)
+        for dev in self.logical.get_all_devices().get("devices", []):
+            entry = self._climate_entry(dev, dev.get("names", []))
+            if entry:
+                out.append(entry)
+        return out
+
+    def get_climate_one(self, device_id: str) -> dict:
+        resolved = self._resolve(device_id)
+        for dev in self._all_devices_raw():
+            if dev.get("id") != resolved:
+                continue
+            names = self._names_for(resolved) or dev.get("names", [])
+            entry = self._climate_entry(dev, names)
+            if entry:
+                return entry
+            raise ValueError(f"Device {resolved} has no climate data")
+        raise KeyError(f"Device {resolved} not found")
+
     def get_sensor(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
         # Logical-first

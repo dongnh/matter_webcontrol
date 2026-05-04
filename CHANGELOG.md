@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.26.1
+
+### New Features
+
+- **`GET /api/climate`** — unified read of temperature (°C) and humidity (%) across every reporting device, mixing thermostat `local_temperature` and standalone temp/humidity sensors. Each entry has `kind` = `"thermostat"` or `"sensor"`. `?id=…` returns one device. New MCP tool: `get_climate`.
+
 ## v0.26.0
 
 ### New Features
