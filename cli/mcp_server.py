@@ -226,6 +226,18 @@ def main():
         mcp.settings.port = args.mcp_port
     except AttributeError:
         logging.warning("FastMCP.settings unavailable; relying on transport defaults.")
+
+    # Relax DNS-rebinding protection so the LAN bind actually accepts requests
+    # whose Host header isn't 127.0.0.1.
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+    except Exception as e:  # pragma: no cover
+        logging.warning(f"Could not relax transport_security ({e}); "
+                        f"requests may be rejected with 'Invalid Host header'.")
+
     transport_name = "streamable-http" if args.transport == "http" else "sse"
     logging.info(f"Starting MCP transport={transport_name} bind={args.mcp_host}:{args.mcp_port}")
     mcp.run(transport=transport_name)
