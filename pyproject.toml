@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matter-web-controller"
-version = "0.26.1"
+version = "0.26.2"
 description = "Using websocket matter server to query/control matter-enabled lights/sensors via a HTTP GET interface."
 readme = "README.md"
 requires-python = ">=3.12"

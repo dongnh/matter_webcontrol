@@ -206,12 +206,29 @@ def main():
     parser.add_argument("--port", type=int, default=8080, help="Matter HTTP server port")
     parser.add_argument("--api-key", type=str, default=os.environ.get("MATTER_SRV_KEY"),
                         help="X-API-Key header for the matter-srv (or set MATTER_SRV_KEY env var)")
+    parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "http"],
+                        help="MCP transport: stdio for local AI agents (default), sse/http for LAN access.")
+    parser.add_argument("--mcp-host", default="127.0.0.1",
+                        help="Bind host for sse/http MCP transport (default 127.0.0.1; use 0.0.0.0 for LAN).")
+    parser.add_argument("--mcp-port", type=int, default=7861,
+                        help="Bind port for sse/http MCP transport (default 7861).")
     args = parser.parse_args()
 
     _base_url = f"http://{args.host}:{args.port}"
     _api_key = args.api_key
     logging.info(f"MCP server connecting to {_base_url}")
-    mcp.run()
+
+    if args.transport == "stdio":
+        mcp.run()
+        return
+    try:
+        mcp.settings.host = args.mcp_host
+        mcp.settings.port = args.mcp_port
+    except AttributeError:
+        logging.warning("FastMCP.settings unavailable; relying on transport defaults.")
+    transport_name = "streamable-http" if args.transport == "http" else "sse"
+    logging.info(f"Starting MCP transport={transport_name} bind={args.mcp_host}:{args.mcp_port}")
+    mcp.run(transport=transport_name)
 
 
 if __name__ == "__main__":
