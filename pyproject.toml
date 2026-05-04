@@ -25,6 +25,10 @@ dependencies = [
 matter-srv = "cli.server:main"
 matter-mcp = "cli.mcp_server:main"
 
+[tool.setuptools.packages.find]
+include = ["cli*"]
+exclude = ["dev*", "matter_storage*"]
+
 [tool.isort]
 profile = "black"
 
