@@ -13,6 +13,14 @@ import chip.clusters.Objects as Clusters
 from cli.logic_bridge import LogicalBridgeManager
 from cli.matter_bridge import MatterBridgeServer
 
+# Thermostat SystemMode values used for AC control.
+# 0=Off, 1=Auto, 3=Cool, 4=Heat, 5=EmergencyHeat, 6=Precooling, 7=FanOnly, 8=Dry, 9=Sleep
+THERMO_MODE_OFF = 0
+THERMO_MODE_COOL = 3
+THERMO_MODE_HEAT = 4
+THERMO_MODE_AUTO = 1
+THERMO_VALID_MODES = {0, 1, 3, 4, 5, 6, 7, 8, 9}
+
 SENSOR_KEYS = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
 MIRED_MIN, MIRED_MAX = 153, 500  # Matter ColorControl spec range
 
@@ -59,6 +67,10 @@ class DeviceController:
         if phys and key in phys.get("states", {}):
             return phys["states"][key]
         return None
+
+    @staticmethod
+    def _is_ac(states: dict) -> bool:
+        return "system_mode" in states
 
     def _parse_id(self, resolved_id: str) -> tuple[int, int]:
         phys = self._find_physical(resolved_id)
@@ -187,6 +199,8 @@ class DeviceController:
         lights_on = 0
         lights_off = 0
         sensors_active = 0
+        acs_on = 0
+        acs_off = 0
         seen: set[str] = set()
 
         for dev in self._all_devices_raw():
@@ -202,11 +216,18 @@ class DeviceController:
                     lights_off += 1
             if any(k in states for k in SENSOR_KEYS):
                 sensors_active += 1
+            if self._is_ac(states):
+                if states.get("system_mode"):
+                    acs_on += 1
+                else:
+                    acs_off += 1
 
         return {
             "lights_on": lights_on,
             "lights_off": lights_off,
             "sensors_active": sensors_active,
+            "acs_on": acs_on,
+            "acs_off": acs_off,
             "logical_bridges": len(self.logical.registry),
             "total_devices": len(seen),
         }
@@ -217,6 +238,14 @@ class DeviceController:
                          brightness: Optional[float] = None,
                          temperature: Optional[int] = None) -> dict:
         resolved = self._resolve(device_id)
+
+        # AC (Thermostat) — only on/off via brightness. Setpoint/mode go via set_ac.
+        # Ignore `temperature` here since it means Kelvin (color), not °C.
+        phys = self._find_physical(resolved)
+        if phys and self._is_ac(phys.get("states", {})):
+            if brightness is None:
+                return {"status": "noop", "id": resolved, "type": "ac"}
+            return await self.set_ac(resolved, on=(brightness > 0))
 
         # Logical device
         target, client = self._find_logical(resolved)
@@ -256,8 +285,13 @@ class DeviceController:
 
     async def toggle(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
-        is_on = self._find_state(resolved, "on_off")
 
+        # AC: SystemMode == 0 means off, anything else means on
+        sm = self._find_state(resolved, "system_mode")
+        if sm is not None:
+            return await self.set_ac(resolved, on=(sm == 0))
+
+        is_on = self._find_state(resolved, "on_off")
         if is_on:
             return await self.set_device(resolved, brightness=0.0)
         else:
@@ -346,6 +380,92 @@ class DeviceController:
         self.bridge._save_names_cache()
 
         return {"status": "success", "id": resolved, "names": self.bridge.device_names.get(resolved, [])}
+
+    # -- Air conditioners (Thermostat-cluster devices) -----------------------
+
+    @staticmethod
+    def _ac_entry(dev: dict, names: list) -> dict:
+        s = dev.get("states", {})
+        out = {
+            "id": dev["id"],
+            "names": names,
+            "system_mode": s.get("system_mode"),
+            "on": bool(s.get("system_mode")),  # 0=Off → False; any non-zero → True
+        }
+        if "local_temperature" in s:
+            out["local_temperature"] = round(s["local_temperature"] / 100.0, 2)
+        if "cooling_setpoint" in s:
+            out["cooling_setpoint"] = round(s["cooling_setpoint"] / 100.0, 2)
+        if "heating_setpoint" in s:
+            out["heating_setpoint"] = round(s["heating_setpoint"] / 100.0, 2)
+        return out
+
+    def get_acs(self) -> list[dict]:
+        if not self.bridge:
+            return []
+        return [
+            self._ac_entry(dev, self._names_for(dev["id"]))
+            for dev in self.bridge.cached_devices
+            if self._is_ac(dev.get("states", {}))
+        ]
+
+    def get_ac(self, device_id: str) -> dict:
+        resolved = self._resolve(device_id)
+        phys = self._find_physical(resolved)
+        if not phys or not self._is_ac(phys.get("states", {})):
+            raise KeyError(f"Device {resolved} is not an AC")
+        return self._ac_entry(phys, self._names_for(resolved))
+
+    async def set_ac(self, device_id: str,
+                     on: Optional[bool] = None,
+                     mode: Optional[int] = None,
+                     setpoint: Optional[float] = None) -> dict:
+        """Control an AC. on/off via SystemMode; setpoint in °C (e.g. 26.0).
+
+        - on=True alone selects last-known non-zero mode, defaulting to Cool.
+        - explicit mode overrides on; mode=0 is OFF.
+        """
+        resolved = self._resolve(device_id)
+        self._verify_hardware()
+        phys = self._find_physical(resolved)
+        if not phys or not self._is_ac(phys.get("states", {})):
+            raise KeyError(f"Device {resolved} is not an AC")
+
+        node_id, ep_id = phys["node_id"], phys["endpoint_id"]
+        wrote = []
+
+        target_mode = None
+        if mode is not None:
+            if int(mode) not in THERMO_VALID_MODES:
+                raise ValueError(f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}")
+            target_mode = int(mode)
+        elif on is True:
+            cur = phys["states"].get("system_mode") or 0
+            target_mode = cur if cur != 0 else THERMO_MODE_COOL
+        elif on is False:
+            target_mode = THERMO_MODE_OFF
+
+        if target_mode is not None:
+            await self.bridge.client.write_attribute(
+                node_id=node_id,
+                attribute_path=f"{ep_id}/513/28",
+                value=target_mode,
+            )
+            wrote.append(("system_mode", target_mode))
+
+        if setpoint is not None:
+            sp_centi = int(round(float(setpoint) * 100))
+            await self.bridge.client.write_attribute(
+                node_id=node_id,
+                attribute_path=f"{ep_id}/513/17",
+                value=sp_centi,
+            )
+            wrote.append(("cooling_setpoint", sp_centi))
+
+        self.bridge._update_cache()
+        return {"status": "success", "id": resolved, "wrote": dict(wrote)}
+
+    # -- Bridges -------------------------------------------------------------
 
     def add_bridge(self, ip: str, port: int, api_key: Optional[str] = None) -> dict:
         node_id = self.logical.add_bridge(ip, port, api_key=api_key)
@@ -452,8 +572,12 @@ class DeviceController:
                 capabilities.append("color_temperature")
             if "occupancy" in states:
                 capabilities.append("occupancy")
+            if "system_mode" in states:
+                capabilities.append("ac")
 
-            if "occupancy" in states:
+            if "system_mode" in states:
+                hw_type = "thermostat"
+            elif "occupancy" in states:
                 hw_type = "occupancy_sensor"
             elif "color_temp_mireds" in states:
                 hw_type = "color_temperature_light"

@@ -157,6 +157,30 @@ def register_device(code: str, ip: str | None = None, name: str | None = None) -
 
 
 @mcp.tool()
+def list_acs() -> list[dict]:
+    """List all ACs (Matter Thermostat endpoints) with on/off, system_mode, local temp, and setpoints in °C."""
+    return _get("/api/acs")
+
+
+@mcp.tool()
+def get_ac(id: str) -> dict:
+    """Get a single AC's state by device ID."""
+    return _get("/api/ac", {"id": id})
+
+
+@mcp.tool()
+def set_ac(id: str, on: bool | None = None, mode: int | None = None,
+           setpoint: float | None = None) -> dict:
+    """Control an AC.
+
+    - on=True turns on (resumes last non-zero SystemMode, defaulting to Cool=3); on=False turns off.
+    - mode (overrides on): 0=Off, 1=Auto, 3=Cool, 4=Heat, 7=FanOnly, 8=Dry.
+    - setpoint: cooling setpoint in °C (e.g. 26.0).
+    """
+    return _post("/api/ac", {"id": id, "on": on, "mode": mode, "setpoint": setpoint})
+
+
+@mcp.tool()
 def refresh() -> dict:
     """Force refresh all device states from Matter bridge and logical bridges."""
     return _get("/api/refresh")

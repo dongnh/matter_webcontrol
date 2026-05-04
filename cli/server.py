@@ -43,6 +43,12 @@ class MiredPayload(BaseModel):
 class BatchPayload(BaseModel):
     actions: list[dict]
 
+class ACPayload(BaseModel):
+    id: str
+    on: Optional[bool] = None
+    mode: Optional[int] = None
+    setpoint: Optional[float] = None
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -258,6 +264,34 @@ async def subscribe_api(request: Request, id: str):
                 subs.remove(queue)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.get("/api/acs")
+async def list_acs_api():
+    return controller.get_acs()
+
+
+@app.api_route("/api/ac", methods=["GET", "POST"])
+async def ac_api(request: Request, payload: Optional[ACPayload] = None):
+    params = _get_params(request, payload, ["id", "on", "mode", "setpoint"])
+    if not params["id"]:
+        raise HTTPException(status_code=400, detail="Missing device id")
+
+    if all(params[k] is None for k in ("on", "mode", "setpoint")):
+        return _wrap(controller.get_ac, params["id"])
+
+    def parse_bool(v):
+        if v is None or isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ("1", "true", "yes", "on")
+        return bool(v)
+
+    on = parse_bool(params["on"])
+    mode = int(params["mode"]) if params["mode"] is not None else None
+    setpoint = float(params["setpoint"]) if params["setpoint"] is not None else None
+
+    return await _wrap_async(controller.set_ac(params["id"], on=on, mode=mode, setpoint=setpoint))
 
 
 @app.get("/api/refresh")

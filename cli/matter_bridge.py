@@ -253,6 +253,18 @@ class MatterBridgeServer:
                 if 768 in endpoint.clusters:
                     states["color_temp_mireds"] = node.get_attribute_value(ep_id, 768, 7)
 
+                # Thermostat cluster (Aqara hubs expose IR ACs as Matter Thermostats)
+                if 513 in endpoint.clusters:
+                    for attr_id, key in (
+                        (0, "local_temperature"),
+                        (17, "cooling_setpoint"),
+                        (18, "heating_setpoint"),
+                        (28, "system_mode"),
+                    ):
+                        v = node.get_attribute_value(ep_id, 513, attr_id)
+                        if v is not None:
+                            states[key] = int(v)
+
                 # Sensor clusters
                 for cluster_id, (name, attr_id, _) in SENSOR_CLUSTERS.items():
                     if cluster_id in endpoint.clusters:

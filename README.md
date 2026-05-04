@@ -108,7 +108,7 @@ Error mapping: `404` (device/alias unknown), `400` (bad parameters), `401` (auth
 
 | Method & Path | Description |
 |---|---|
-| `GET /api/status` | Counts: lights on/off, active sensors, bridges, total devices |
+| `GET /api/status` | Counts: lights on/off, active sensors, ACs on/off, bridges, total devices |
 | `GET /api/devices` | Raw list — every physical and logical device with `states` dict |
 | `GET /api/lights` | Lights with normalized brightness (0.0–1.0) and temperature in Kelvin |
 | `GET /api/sensors` | All sensors with their metrics |
@@ -122,7 +122,7 @@ Error mapping: `404` (device/alias unknown), `400` (bad parameters), `401` (auth
 | Method & Path | Body / Params |
 |---|---|
 | `POST /api/set` | `{"id":"dev_…","brightness":0.0–1.0,"temperature":Kelvin}` — both fields optional |
-| `GET /api/toggle?id=...` | Flip on/off |
+| `GET /api/toggle?id=...` | Flip on/off (lights and ACs — for ACs, off→on resumes the last non-zero `system_mode`) |
 | `POST /api/level` | `{"id":"dev_…","level":0–254}` |
 | `POST /api/mired` | `{"id":"dev_…","mireds":153–500}` (clamped to Matter spec) |
 | `POST /api/batch` | `{"actions":[{"id":..., "brightness":..., "temperature":...}, …]}` — runs in parallel |
@@ -142,7 +142,41 @@ curl -H "X-API-Key: $MATTER_SRV_KEY" \
 | `POST /api/name` | `{"id":"dev_…","name":"…"}` — assign alias |
 | `GET /api/name/remove?id=&name=` | Remove alias |
 | `GET /api/register?code=&name=&ip=` | Commission a Matter device by pairing code |
+| `GET /api/unregister?node_id=N` | Unpair a fabric node (cleanup phantom entries) |
 | `GET /api/refresh` | Re-pull caches from Matter server and logical bridges |
+
+### Air conditioners (Thermostat)
+
+Aqara Hubs (verified on **Hub M200**) expose paired IR ACs as Matter **Thermostat** endpoints (cluster `0x0201` / 513) — there is no Scenes-cluster bridging, so on/off and setpoint are written directly via Thermostat attributes. The same path applies to other Matter thermostats.
+
+State surfaced (alongside the standard `/api/devices` entry):
+
+| Field | Meaning |
+|---|---|
+| `system_mode` | `0`=Off, `1`=Auto, `3`=Cool, `4`=Heat, `7`=FanOnly, `8`=Dry |
+| `on` | `system_mode != 0` |
+| `local_temperature` | °C, read-only |
+| `cooling_setpoint` / `heating_setpoint` | °C |
+
+| Method & Path | Params |
+|---|---|
+| `GET /api/acs` | List all AC/Thermostat devices |
+| `GET /api/ac?id=…` | Read one AC (state, setpoints) |
+| `POST /api/ac` | `{"id":"dev_…","on":true,"mode":3,"setpoint":26.0}` |
+
+Notes:
+- `on=true` resumes the last non-zero `system_mode` (default Cool); `on=false` writes `system_mode=0`.
+- `mode` overrides `on`. `setpoint` is in °C (converted to 1/100 °C internally per Matter spec).
+- `/api/toggle?id=…` and `/api/set` (brightness 0/1) also work on AC IDs — they map to on/off only.
+
+```bash
+# Turn on the Office AC, Cool mode, 26°C
+curl -H "X-API-Key: $MATTER_SRV_KEY" -H "Content-Type: application/json" \
+  -d '{"id":"dev_78c2bf4d","on":true,"mode":3,"setpoint":26.0}' \
+  http://127.0.0.1:8080/api/ac
+```
+
+> **Aqara hub bridging caveat (verified on Hub M200, Climate Sensor W100):** Aqara does **not** bridge its in-app Scenes through Matter (no `Scenes` / `ScenesManagement` cluster on either hub or its bridged endpoints). Hub-side scenes like `Office_AC26Auto` are only reachable via the Aqara app or their own automations. Use the Thermostat write path above to control AC state directly from Matter — the hub translates writes to IR commands.
 
 ### Federation
 

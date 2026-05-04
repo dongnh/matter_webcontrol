@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.26.0
+
+### New Features
+
+- **Native Thermostat / AC control** — Matter Thermostat endpoints (cluster 513) are now first-class. `MatterBridgeServer._update_cache` extracts `local_temperature`, `system_mode`, `cooling_setpoint`, `heating_setpoint`. New endpoints: `GET /api/acs`, `GET/POST /api/ac` (read/control: `on`, `mode`, `setpoint` in °C). New MCP tools: `list_acs`, `get_ac`, `set_ac`. `/api/toggle` and `/api/set` (brightness 0/1) on a thermostat ID map to on/off via `system_mode`. `/api/status` adds `acs_on` / `acs_off` counters; `/api/metadata` recognises `hardware_type: "thermostat"`. Verified on Aqara Hub M200 + Climate Sensor W100 — Aqara hubs expose paired IR ACs through this path (no Scenes cluster is exposed, so the earlier scene-recall design from v0.26.0-dev was dropped).
+
+## v0.25.1
+
+### Improvements
+
+- **Auto-dedupe on re-pair** — after a `commission_with_code` succeeds, any older fabric node sharing the new node's endpoint-0 UniqueID/SerialNumber is automatically unpaired. Eliminates duplicate `dev_*` entries when re-commissioning Aqara/Eve hubs that keep their UniqueID across pairings.
+- **`GET /api/unregister?node_id=N`** — manual fabric-node unpair for cleaning up phantom entries.
+
 ## v0.25.0
 
 ### Breaking Changes
