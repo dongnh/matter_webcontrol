@@ -146,9 +146,26 @@ curl -H "X-API-Key: $MATTER_SRV_KEY" \
 | `GET /api/unregister?node_id=N` | Unpair a fabric node (cleanup phantom entries) |
 | `GET /api/refresh` | Re-pull caches from Matter server and logical bridges |
 
+### Sensors (verified hardware)
+
+All of the following Aqara sensors are bridged via **Hub M200** and surface through `/api/sensors` (and the SSE occupancy stream below). Each appears as one or more Matter endpoints with the listed clusters:
+
+| Device | Connectivity | Matter clusters surfaced | Notes |
+|---|---|---|---|
+| **Motion Sensor P1** | Zigbee → M200 bridge | `OccupancySensing` (0x0406), `IlluminanceMeasurement` (0x0400), battery | PIR, battery-powered. Reports motion (occupancy 0/1) with a configurable hold time set in the Aqara app, plus ambient lux. |
+| **Presence Sensor FP2** | Zigbee → M200 bridge | `OccupancySensing` per zone endpoint, `IlluminanceMeasurement` | mmWave, mains-powered, multi-zone. The hub bridges each configured zone as its own endpoint → its own `dev_*` ID, so up to ~30 independent occupancy IDs can come from a single FP2. |
+| **Presence Sensor FP1E** | Zigbee → M200 bridge | `OccupancySensing`, presence/absence | mmWave single-zone, mains-powered. Faster and more reliable for "someone is sitting still" than the PIR P1. No illuminance. |
+| **Presence Multi-Sensor FP300** | Zigbee → M200 bridge | `OccupancySensing`, `IlluminanceMeasurement`, `TemperatureMeasurement` (0x0402), `RelativeHumidityMeasurement` (0x0405) | mmWave + light + temp/humidity in one mains-powered unit. Temperature and humidity also show up in `/api/climate`. |
+
+Notes:
+
+- All four expose **`occupancy`** (0/1) on `/api/sensors` and emit on the `/api/occupancy/stream` SSE feed (see below). Use the device's `dev_*` ID to subscribe.
+- Hold/clear times, mmWave sensitivity, and FP2 zone layouts are configured in the **Aqara Home app**, not via Matter — those settings are not exposed as Matter attributes and so cannot be changed from this server.
+- The FP2's per-zone endpoints each get their own stable `dev_*` ID; assign aliases via `POST /api/name` so the zones are recognizable.
+
 ### Air conditioners (Thermostat)
 
-Aqara Hubs (verified on **Hub M200**) expose paired IR ACs as Matter **Thermostat** endpoints (cluster `0x0201` / 513) — there is no Scenes-cluster bridging, so on/off and setpoint are written directly via Thermostat attributes. The same path applies to other Matter thermostats.
+This setup is verified with **Aqara Hub M200** + **Aqara Climate Sensor W100**, following Aqara's documented "Climate Sensor as Thermostat" pattern: the W100 carries the IR blaster and on-board temperature/humidity sensor and is paired (in the Aqara Home app) to the target AC. The M200 then bridges the W100 over Matter as a single **Thermostat** endpoint (cluster `0x0201` / 513) — `local_temperature` is the W100's measured room temperature, and writes to `system_mode` / `*_setpoint` are translated by the W100 into IR commands to the AC. There is no Scenes-cluster bridging, so on/off and setpoint must be written directly via Thermostat attributes. The same path applies to other Matter thermostats.
 
 State surfaced (alongside the standard `/api/devices` entry):
 
@@ -177,7 +194,7 @@ curl -H "X-API-Key: $MATTER_SRV_KEY" -H "Content-Type: application/json" \
   http://127.0.0.1:8080/api/ac
 ```
 
-> **Aqara hub bridging caveat (verified on Hub M200, Climate Sensor W100):** Aqara does **not** bridge its in-app Scenes through Matter (no `Scenes` / `ScenesManagement` cluster on either hub or its bridged endpoints). Hub-side scenes like `Office_AC26Auto` are only reachable via the Aqara app or their own automations. Use the Thermostat write path above to control AC state directly from Matter — the hub translates writes to IR commands.
+> **Aqara hub bridging caveat (verified on Hub M200 + Climate Sensor W100):** Aqara does **not** bridge its in-app Scenes through Matter (no `Scenes` / `ScenesManagement` cluster on either the M200 hub or the W100-as-Thermostat endpoint it bridges). Hub-side scenes like `Office_AC26Auto` are only reachable via the Aqara app or their own automations. Use the Thermostat write path above to drive the W100 directly from Matter — the W100 then emits the IR commands to the AC.
 
 ### Federation
 
