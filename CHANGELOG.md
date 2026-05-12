@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.27.0
+
+### New Features
+
+- **Logical-bridge AC control** — `/api/ac` (and the underlying `get_ac` / `set_ac` / `get_acs`) now route AC and heater devices that come from remote logical bridges, not just locally-paired Matter thermostats. Reads return the same schema as native ACs; writes are forwarded as REST calls (`LogicalBridgeClient.set_ac`). This unlocks HomeKit-only heaters (e.g. Aqara Bathroom Heater T1 via [matter-homekit-bridge](https://github.com/dongnh/matter-homekit-bridge)) as first-class thermostats.
+- **`fan_speed` on `/api/ac`** — new optional field on the AC endpoint and `_ac_entry` payload, surfaced for devices whose backend bridge reports/accepts it (`0–100`). No effect on devices that don't expose a fan characteristic.
+- **`system_mode` synonym in `/api/ac` payload** — accepted alongside `mode` for clarity.
+
 ## v0.26.1
 
 ### New Features

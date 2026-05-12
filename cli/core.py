@@ -451,19 +451,30 @@ class DeviceController:
             out["cooling_setpoint"] = round(s["cooling_setpoint"] / 100.0, 2)
         if "heating_setpoint" in s:
             out["heating_setpoint"] = round(s["heating_setpoint"] / 100.0, 2)
+        if "fan_speed" in s:
+            out["fan_speed"] = int(s["fan_speed"])
         return out
 
     def get_acs(self) -> list[dict]:
-        if not self.bridge:
-            return []
-        return [
-            self._ac_entry(dev, self._names_for(dev["id"]))
-            for dev in self.bridge.cached_devices
-            if self._is_ac(dev.get("states", {}))
-        ]
+        out = []
+        if self.bridge:
+            out.extend(
+                self._ac_entry(dev, self._names_for(dev["id"]))
+                for dev in self.bridge.cached_devices
+                if self._is_ac(dev.get("states", {}))
+            )
+        for dev in self.logical.get_all_devices().get("devices", []):
+            if self._is_ac(dev.get("states", {})):
+                names = self._names_for(dev["id"]) or dev.get("names", [])
+                out.append(self._ac_entry(dev, names))
+        return out
 
     def get_ac(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
+        log_dev, _ = self._find_logical(resolved)
+        if log_dev and self._is_ac(log_dev.get("states", {})):
+            names = self._names_for(resolved) or log_dev.get("names", [])
+            return self._ac_entry(log_dev, names)
         phys = self._find_physical(resolved)
         if not phys or not self._is_ac(phys.get("states", {})):
             raise KeyError(f"Device {resolved} is not an AC")
@@ -472,13 +483,36 @@ class DeviceController:
     async def set_ac(self, device_id: str,
                      on: Optional[bool] = None,
                      mode: Optional[int] = None,
-                     setpoint: Optional[float] = None) -> dict:
+                     setpoint: Optional[float] = None,
+                     fan_speed: Optional[int] = None) -> dict:
         """Control an AC. on/off via SystemMode; setpoint in °C (e.g. 26.0).
 
         - on=True alone selects last-known non-zero mode, defaulting to Cool.
         - explicit mode overrides on; mode=0 is OFF.
+        - fan_speed (0-100) only forwarded to logical-bridge devices that support it.
         """
         resolved = self._resolve(device_id)
+
+        # Logical-first: if the device belongs to a remote logical bridge,
+        # forward via REST instead of writing Matter clusters directly.
+        log_dev, client = self._find_logical(resolved)
+        if log_dev and client and self._is_ac(log_dev.get("states", {})):
+            if mode is not None and int(mode) not in THERMO_VALID_MODES:
+                raise ValueError(f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}")
+            client.set_ac(
+                resolved, on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed
+            )
+            try:
+                client.refresh()
+            except Exception:
+                pass
+            wrote = {}
+            if mode is not None: wrote["system_mode"] = int(mode)
+            elif on is False: wrote["system_mode"] = THERMO_MODE_OFF
+            if setpoint is not None: wrote["heating_setpoint"] = int(round(setpoint * 100))
+            if fan_speed is not None: wrote["fan_speed"] = int(fan_speed)
+            return {"status": "success", "id": resolved, "wrote": wrote, "via": "logical"}
+
         self._verify_hardware()
         phys = self._find_physical(resolved)
         if not phys or not self._is_ac(phys.get("states", {})):

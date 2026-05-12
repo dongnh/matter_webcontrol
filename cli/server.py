@@ -47,7 +47,9 @@ class ACPayload(BaseModel):
     id: str
     on: Optional[bool] = None
     mode: Optional[int] = None
+    system_mode: Optional[int] = None
     setpoint: Optional[float] = None
+    fan_speed: Optional[int] = None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -280,11 +282,11 @@ async def list_acs_api():
 
 @app.api_route("/api/ac", methods=["GET", "POST"])
 async def ac_api(request: Request, payload: Optional[ACPayload] = None):
-    params = _get_params(request, payload, ["id", "on", "mode", "setpoint"])
+    params = _get_params(request, payload, ["id", "on", "mode", "system_mode", "setpoint", "fan_speed"])
     if not params["id"]:
         raise HTTPException(status_code=400, detail="Missing device id")
 
-    if all(params[k] is None for k in ("on", "mode", "setpoint")):
+    if all(params[k] is None for k in ("on", "mode", "system_mode", "setpoint", "fan_speed")):
         return _wrap(controller.get_ac, params["id"])
 
     def parse_bool(v):
@@ -295,10 +297,12 @@ async def ac_api(request: Request, payload: Optional[ACPayload] = None):
         return bool(v)
 
     on = parse_bool(params["on"])
-    mode = int(params["mode"]) if params["mode"] is not None else None
+    mode_raw = params["system_mode"] if params["system_mode"] is not None else params["mode"]
+    mode = int(mode_raw) if mode_raw is not None else None
     setpoint = float(params["setpoint"]) if params["setpoint"] is not None else None
+    fan_speed = int(params["fan_speed"]) if params["fan_speed"] is not None else None
 
-    return await _wrap_async(controller.set_ac(params["id"], on=on, mode=mode, setpoint=setpoint))
+    return await _wrap_async(controller.set_ac(params["id"], on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed))
 
 
 @app.get("/api/refresh")

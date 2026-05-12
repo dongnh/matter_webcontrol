@@ -71,6 +71,28 @@ class LogicalBridgeClient:
             body={"id": device_id, "brightness": float(brightness)},
         )
 
+    def get_ac(self, device_id: str) -> Any:
+        return self._request("/api/ac", query={"id": device_id})
+
+    def set_ac(
+        self,
+        device_id: str,
+        on: Optional[bool] = None,
+        mode: Optional[int] = None,
+        setpoint: Optional[float] = None,
+        fan_speed: Optional[int] = None,
+    ) -> Any:
+        body: Dict[str, Any] = {"id": device_id}
+        if on is not None:
+            body["on"] = bool(on)
+        if mode is not None:
+            body["system_mode"] = int(mode)
+        if setpoint is not None:
+            body["setpoint"] = float(setpoint)
+        if fan_speed is not None:
+            body["fan_speed"] = int(fan_speed)
+        return self._request("/api/ac", method="POST", body=body)
+
 
 class LogicalBridgeManager:
     """Registry of remote logical bridges with persistent cache."""
