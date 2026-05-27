@@ -71,6 +71,23 @@ class LogicalBridgeClient:
             body={"id": device_id, "brightness": float(brightness)},
         )
 
+    def open_stream(self, path: str, query: Optional[dict] = None):
+        """Open a long-lived HTTP stream (e.g. SSE) on the remote bridge.
+
+        Returns the raw urllib response object (caller iterates / closes it).
+        No read timeout, so it stays open for server-sent events.
+        """
+        url = f"{self.base_url}{path}"
+        if query:
+            clean = {k: v for k, v in query.items() if v is not None}
+            if clean:
+                url += "?" + urllib.parse.urlencode(clean)
+        headers: Dict[str, str] = {}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        return urllib.request.urlopen(req, timeout=None)
+
     def get_ac(self, device_id: str) -> Any:
         return self._request("/api/ac", query={"id": device_id})
 

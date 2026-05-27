@@ -3,6 +3,7 @@ import asyncio
 import datetime
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -243,9 +244,68 @@ async def mired_api(request: Request, payload: Optional[MiredPayload] = None):
     return await _wrap_async(controller.set_mired(params["id"], int(params["mireds"])))
 
 
+async def _subscribe_logical(request: Request, resolved: str, client):
+    """Proxy a remote logical bridge's SSE stream (occupancy) to this client.
+
+    The LogicalBridgeClient uses a blocking urllib stream, so a background
+    thread reads its lines and hands them to the async generator via a queue.
+    Lines are forwarded verbatim to preserve SSE framing.
+    """
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    stop = threading.Event()
+    _DONE = object()
+
+    def reader():
+        stream = None
+        try:
+            stream = client.open_stream("/api/subscribe", {"id": resolved})
+            for raw in stream:
+                if stop.is_set():
+                    break
+                line = raw.decode("utf-8", errors="replace")
+                loop.call_soon_threadsafe(queue.put_nowait, line)
+        except Exception as exc:  # noqa: BLE001 - surface upstream loss as stream end
+            logging.warning("logical subscribe [%s] dropped: %s", resolved, exc)
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+
+    threading.Thread(target=reader, daemon=True).start()
+
+    async def stream_gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if item is _DONE:
+                    break
+                yield item
+        finally:
+            stop.set()
+
+    return StreamingResponse(stream_gen(), media_type="text/event-stream")
+
+
 @app.get("/api/subscribe")
 async def subscribe_api(request: Request, id: str):
     resolved = id
+
+    # Logical-first: if this device lives on a remote logical bridge, forward
+    # its own SSE stream rather than the local Matter-fabric occupancy feed.
+    log_dev, log_client = controller._find_logical(resolved)
+    if log_dev is not None and log_client is not None:
+        return await _subscribe_logical(request, resolved, log_client)
+
     controller.bridge.occupancy_subscribers.setdefault(resolved, [])
 
     queue = asyncio.Queue()
