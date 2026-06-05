@@ -288,6 +288,17 @@ async def _subscribe_logical(request: Request, resolved: str, client):
                     yield ": keepalive\n\n"
                     continue
                 if item is _DONE:
+                    # Upstream logical bridge went away (e.g. the host Mac slept
+                    # or lost the network). A device we can no longer reach is, by
+                    # definition, unoccupied — emit a synthetic 0 so subscribers
+                    # fall back to "absent" instead of holding the last value.
+                    import json as _json
+
+                    iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    payload = _json.dumps(
+                        {"id": resolved, "occupancy": 0, "timestamp": iso}
+                    )
+                    yield f"data: {payload}\n\n"
                     break
                 yield item
         finally:

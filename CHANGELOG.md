@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.28.0
+
+### New Features
+
+- **Logical-bridge occupancy over `/api/subscribe`** — the SSE endpoint is now logical-aware. When the requested device lives on a registered logical bridge, matter_webcontrol opens that bridge's own `/api/subscribe` stream and forwards its frames, so presence changes from sources like [matter-mac-presence](https://github.com/dongnh/matter-mac-presence) reach subscribers live instead of only via polling. Local Matter sensors keep their original path.
+
+### Fixes
+
+- **Unreachable logical bridge now reads as empty** — if a logical bridge's stream drops (for example, the Mac hosting a presence sensor goes to sleep), `/api/subscribe` emits a final `occupancy: 0` frame before closing. Subscribers fall back to "absent" instead of holding the last value, so a sleeping Mac no longer keeps a room lit.
+
 ## v0.27.0
 
 ### New Features
