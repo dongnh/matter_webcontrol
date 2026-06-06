@@ -1,295 +1,99 @@
 # Matter Web Controller
 
-A Python server that exposes Matter smart-home devices and remote logical bridges as a unified REST + MCP API. Built on top of [`python-matter-server`](https://github.com/home-assistant-libs/python-matter-server).
+One REST and MCP surface for every Matter device on your network.
 
-- **REST** — control lights, read sensors, subscribe to occupancy events
-- **MCP** — same operations available as tools for LLM integration
-- **Federation** — chain multiple instances together over HTTP, no embedded code
+Matter Web Controller puts a fast, cached HTTP layer in front of your Matter fabric, so the rest of your home — schedulers, HomeKit bridges, dashboards, language models — can read and write devices without ever speaking the protocol. It runs as an ordinary Python service, holds the WebSocket session to `python-matter-server` for you, and federates with other instances over the same REST it exposes to clients. Python 3.12 or newer.
 
----
+## Overview
 
-## Quick start
+A single binary, `matter-srv`, owns the Matter fabric and serves a small, considered REST API. A second binary, `matter-mcp`, mirrors that API as MCP tools for LLM clients. Both share one API key, one address scheme, and one mental model.
 
-```bash
-pip install matter-web-controller
+Devices are addressed by stable `dev_*` identifiers derived from the hardware UniqueID, so an alias change or a re-commission never breaks an existing integration. Aliases are display metadata; IDs are the contract.
 
-# Generate an API key (used by all clients via X-API-Key header)
-export MATTER_SRV_KEY=$(openssl rand -hex 32)
-
-# Start the server
-matter-srv --fabric "My Home"
-
-# In another terminal — talk to it
-curl -H "X-API-Key: $MATTER_SRV_KEY" http://127.0.0.1:8080/api/status
-# → {"lights_on":0,"lights_off":0,"sensors_active":0,"logical_bridges":0,"total_devices":0}
-
-# Pair a Matter device (get the code from the device's app, e.g. Aqara Home)
-curl -H "X-API-Key: $MATTER_SRV_KEY" \
-  "http://127.0.0.1:8080/api/register?code=2456-515-1552&name=Living%20Room"
-```
-
-Requires Python 3.12+.
-
----
+Authentication is a single `X-API-Key` header — the same one used for federation between instances. No sudo. No raw sockets. Matter operational traffic is ordinary IPv6 UDP, and on macOS and most Linux setups the service runs as your user.
 
 ## How it works
 
-```
-┌──────────────────────┐                ┌─────────────────────┐
-│  REST clients        │                │  Other matter-srv   │
-│  MCP / curl / app    │                │  (federation)       │
-└──────────┬───────────┘                └──────────┬──────────┘
-           │ X-API-Key                             │ X-API-Key
-           ▼                                       ▼
-        ┌────────────────────────────────────────────────┐
-        │  matter-srv (FastAPI)                          │
-        │  ┌──────────────┐    ┌──────────────────────┐  │
-        │  │ MatterBridge │    │ LogicalBridgeManager │  │
-        │  │  (WebSocket) │    │       (HTTP)         │  │
-        │  └──────┬───────┘    └──────────┬───────────┘  │
-        └─────────┼───────────────────────┼──────────────┘
-                  ▼                       ▼
-          python-matter-server      remote matter-srv
-                  ▼                       ▼
-             Matter LAN              another fabric
-```
+The Matter bridge runs `python-matter-server` as a subprocess and connects over WebSocket. Device state is cached and event-driven, so REST responses don't block on protocol round-trips and one slow device can't stall the rest.
 
-- The Matter bridge runs `python-matter-server` as a subprocess and connects via WebSocket. Device states are cached and event-driven, so REST responses don't block on protocol round-trips.
-- Logical bridges federate with other matter-srv instances over plain REST. When a command targets a logical device, it's forwarded to the owning instance.
-- Authentication is a single `X-API-Key` header. The same key is used for federation between instances.
+The logical bridge layer federates with other matter-srv instances over plain REST. Register a peer and its devices appear in your `/api/devices`; commands targeting peer-owned IDs are forwarded transparently. There is no code execution and no script payload — just one service calling another's REST.
 
----
+Bluetooth commissioning is intentionally off by default. Devices are commissioned over mDNS, which is what you want once they're already on the LAN.
+
+## Installation
+
+Install `matter-web-controller` from PyPI into a Python 3.12+ environment, set `MATTER_SRV_KEY` to a strong random value, and launch `matter-srv`. Bind to `127.0.0.1` for local-only use, or `0.0.0.0` to expose on the LAN — the API key is required whenever the bind address is non-local. The Matter WebSocket binds to `--port + 1`.
+
+`matter-mcp` is a thin HTTP client over the same API. Point it at a running `matter-srv` and any MCP-compatible client gets the full tool surface.
 
 ## Privileges
 
-`sudo` is **not** required when devices are already on the LAN. Matter operational traffic uses ordinary IPv6 UDP — no raw sockets, no Bluetooth.
+No root, no special groups, no capabilities for normal operation on macOS or Linux. BLE commissioning of brand-new devices on Linux is the one exception — that path needs the `bluetooth` group or matching capabilities. macOS prompts for Bluetooth access through the system dialog.
 
-| Scenario | Privilege needed |
-|---|---|
-| macOS, devices on LAN | None — run as your user |
-| Linux, devices on LAN | None, or `setcap 'cap_net_raw,cap_net_admin+eip' $(readlink -f $(which python3))` if mDNS conflicts |
-| BLE commissioning of new devices on Linux | `bluetooth` group + capabilities (or sudo) |
-| BLE commissioning on macOS | None — system prompts for Bluetooth permission |
+## API surface
 
----
+Every endpoint requires `X-API-Key` when the server was started with one. Errors map cleanly: `404` for unknown devices, `400` for bad parameters, `401` for auth, `503` when the Matter bridge is offline, `500` for everything else.
 
-## CLI options
+**Status and discovery**
 
-### `matter-srv`
+- `GET /api/status` — counts of lights, sensors, ACs, bridges, total devices.
+- `GET /api/devices` — every physical and logical device with its full state dict.
+- `GET /api/lights` — lights with normalized brightness and Kelvin.
+- `GET /api/sensors`, `GET /api/sensor` — sensor list, or one by ID.
+- `GET /api/climate` — temperature and humidity from every reporting device.
+- `GET /api/metadata` — declarative capability descriptor used by federation peers.
 
-| Flag | Default | Description |
-|---|---|---|
-| `--port` | `8080` | REST port. Matter WebSocket binds to `port + 1` |
-| `--host` | `127.0.0.1` | Bind address. Use `0.0.0.0` to expose on LAN (api-key required) |
-| `--api-key` | `$MATTER_SRV_KEY` | Required header value. If unset and `--host 0.0.0.0`, a warning is logged |
-| `--fabric` | _(none)_ | Matter fabric label shown to commissioned devices |
+**Light control**
 
-### `matter-mcp`
+- `POST /api/set` — high-level brightness and color temperature in one call.
+- `POST /api/level`, `GET /api/level` — raw Matter level, 0–254.
+- `POST /api/mired`, `GET /api/mired` — color temperature in mireds, clamped to spec.
+- `GET /api/toggle` — flip on/off; also valid against ACs.
+- `POST /api/batch` — multiple set actions executed in parallel.
 
-Connects to a running `matter-srv` and exposes its operations as MCP tools.
+**Air conditioners and thermostats**
 
-| Flag | Default | Description |
-|---|---|---|
-| `--host` | `localhost` | matter-srv host |
-| `--port` | `8080` | matter-srv port |
-| `--api-key` | `$MATTER_SRV_KEY` | Forwarded as `X-API-Key` |
+- `GET /api/acs`, `GET /api/ac` — list all thermostats, or read one.
+- `POST /api/ac` — write `on`, `mode`, and `setpoint` in °C; verified against Aqara Hub M200 paired with the W100 Climate Sensor acting as IR thermostat. `on=true` restores the last non-zero mode; `on=false` writes `system_mode=0`.
 
----
+**Sensors**
 
-## REST API
+Verified end-to-end with Aqara Motion Sensor P1, Presence Sensor FP1E, Presence Sensor FP2 (per-zone endpoints, each its own `dev_*` ID), and Presence Multi-Sensor FP300. Occupancy, illuminance, temperature, and humidity surface through `/api/sensors` and `/api/climate` as appropriate. Sensitivity, hold time, and FP2 zone layout are configured in the Aqara Home app; those are not Matter attributes and cannot be set from this server.
 
-All endpoints require `X-API-Key: $MATTER_SRV_KEY` (when `--api-key` is set).
+**Occupancy stream**
 
-Devices are addressed by stable hash-based IDs like `dev_a3f7c1b2`, derived from the hardware UniqueID. Aliases set via `/api/name` are display-only — they are **not** accepted as IDs anywhere.
+- `GET /api/subscribe` — Server-Sent Events for occupancy changes on a given `dev_*`. A keepalive comment fires every 15 seconds so dead connections are detected even when nothing is moving.
 
-Error mapping: `404` (device/alias unknown), `400` (bad parameters), `401` (auth), `503` (Matter bridge offline), `500` (other).
+**Naming and lifecycle**
 
-### Read
+- `POST /api/name`, `GET /api/name/remove` — manage display aliases.
+- `GET /api/register` — commission a Matter device by pairing code over mDNS.
+- `GET /api/unregister` — drop a fabric node and clean up phantom entries.
+- `GET /api/refresh` — re-pull caches from the Matter server and every logical bridge.
 
-| Method & Path | Description |
-|---|---|
-| `GET /api/status` | Counts: lights on/off, active sensors, ACs on/off, bridges, total devices |
-| `GET /api/devices` | Raw list — every physical and logical device with `states` dict |
-| `GET /api/lights` | Lights with normalized brightness (0.0–1.0) and temperature in Kelvin |
-| `GET /api/sensors` | All sensors with their metrics |
-| `GET /api/sensor?id=...` | One sensor by ID |
-| `GET /api/climate` | Temperature (°C) and humidity (%) for every reporting device — thermostat `local_temperature` + standalone temp/humidity sensors. Add `?id=…` for one device. |
-| `GET /api/level?id=...` | Read raw brightness (0–254). Add `&level=N` to set |
-| `GET /api/mired?id=...` | Read color temperature (mireds). Add `&mireds=N` to set |
-| `GET /api/metadata` | Declarative bridge info (capabilities + states), used by federation peers |
+**Federation**
 
-### Control
-
-| Method & Path | Body / Params |
-|---|---|
-| `POST /api/set` | `{"id":"dev_…","brightness":0.0–1.0,"temperature":Kelvin}` — both fields optional |
-| `GET /api/toggle?id=...` | Flip on/off (lights and ACs — for ACs, off→on resumes the last non-zero `system_mode`) |
-| `POST /api/level` | `{"id":"dev_…","level":0–254}` |
-| `POST /api/mired` | `{"id":"dev_…","mireds":153–500}` (clamped to Matter spec) |
-| `POST /api/batch` | `{"actions":[{"id":..., "brightness":..., "temperature":...}, …]}` — runs in parallel |
-
-```bash
-# Set 80 % warm white on a device
-curl -H "X-API-Key: $MATTER_SRV_KEY" \
-  -X POST -H "Content-Type: application/json" \
-  -d '{"id":"dev_e3798593","brightness":0.8,"temperature":2700}' \
-  http://127.0.0.1:8080/api/set
-```
-
-### Management
-
-| Method & Path | Params |
-|---|---|
-| `POST /api/name` | `{"id":"dev_…","name":"…"}` — assign alias |
-| `GET /api/name/remove?id=&name=` | Remove alias |
-| `GET /api/register?code=&name=&ip=` | Commission a Matter device by pairing code |
-| `GET /api/unregister?node_id=N` | Unpair a fabric node (cleanup phantom entries) |
-| `GET /api/refresh` | Re-pull caches from Matter server and logical bridges |
-
-### Sensors (verified hardware)
-
-All of the following Aqara sensors are bridged via **Hub M200** and surface through `/api/sensors` (and the SSE occupancy stream below). Each appears as one or more Matter endpoints with the listed clusters:
-
-| Device | Connectivity | Matter clusters surfaced | Notes |
-|---|---|---|---|
-| **Motion Sensor P1** | Zigbee → M200 bridge | `OccupancySensing` (0x0406), `IlluminanceMeasurement` (0x0400), battery | PIR, battery-powered. Reports motion (occupancy 0/1) with a configurable hold time set in the Aqara app, plus ambient lux. |
-| **Presence Sensor FP2** | Zigbee → M200 bridge | `OccupancySensing` per zone endpoint, `IlluminanceMeasurement` | mmWave, mains-powered, multi-zone. The hub bridges each configured zone as its own endpoint → its own `dev_*` ID, so up to ~30 independent occupancy IDs can come from a single FP2. |
-| **Presence Sensor FP1E** | Zigbee → M200 bridge | `OccupancySensing`, presence/absence | mmWave single-zone, mains-powered. Faster and more reliable for "someone is sitting still" than the PIR P1. No illuminance. |
-| **Presence Multi-Sensor FP300** | Zigbee → M200 bridge | `OccupancySensing`, `IlluminanceMeasurement`, `TemperatureMeasurement` (0x0402), `RelativeHumidityMeasurement` (0x0405) | mmWave + light + temp/humidity in one mains-powered unit. Temperature and humidity also show up in `/api/climate`. |
-
-Notes:
-
-- All four expose **`occupancy`** (0/1) on `/api/sensors` and emit on the `/api/occupancy/stream` SSE feed (see below). Use the device's `dev_*` ID to subscribe.
-- Hold/clear times, mmWave sensitivity, and FP2 zone layouts are configured in the **Aqara Home app**, not via Matter — those settings are not exposed as Matter attributes and so cannot be changed from this server.
-- The FP2's per-zone endpoints each get their own stable `dev_*` ID; assign aliases via `POST /api/name` so the zones are recognizable.
-
-### Air conditioners (Thermostat)
-
-This setup is verified with **Aqara Hub M200** + **Aqara Climate Sensor W100**, following Aqara's documented "Climate Sensor as Thermostat" pattern: the W100 carries the IR blaster and on-board temperature/humidity sensor and is paired (in the Aqara Home app) to the target AC. The M200 then bridges the W100 over Matter as a single **Thermostat** endpoint (cluster `0x0201` / 513) — `local_temperature` is the W100's measured room temperature, and writes to `system_mode` / `*_setpoint` are translated by the W100 into IR commands to the AC. There is no Scenes-cluster bridging, so on/off and setpoint must be written directly via Thermostat attributes. The same path applies to other Matter thermostats.
-
-State surfaced (alongside the standard `/api/devices` entry):
-
-| Field | Meaning |
-|---|---|
-| `system_mode` | `0`=Off, `1`=Auto, `3`=Cool, `4`=Heat, `7`=FanOnly, `8`=Dry |
-| `on` | `system_mode != 0` |
-| `local_temperature` | °C, read-only |
-| `cooling_setpoint` / `heating_setpoint` | °C |
-
-| Method & Path | Params |
-|---|---|
-| `GET /api/acs` | List all AC/Thermostat devices |
-| `GET /api/ac?id=…` | Read one AC (state, setpoints) |
-| `POST /api/ac` | `{"id":"dev_…","on":true,"mode":3,"setpoint":26.0}` |
-
-Notes:
-- `on=true` resumes the last non-zero `system_mode` (default Cool); `on=false` writes `system_mode=0`.
-- `mode` overrides `on`. `setpoint` is in °C (converted to 1/100 °C internally per Matter spec).
-- `/api/toggle?id=…` and `/api/set` (brightness 0/1) also work on AC IDs — they map to on/off only.
-
-```bash
-# Turn on the Office AC, Cool mode, 26°C
-curl -H "X-API-Key: $MATTER_SRV_KEY" -H "Content-Type: application/json" \
-  -d '{"id":"dev_78c2bf4d","on":true,"mode":3,"setpoint":26.0}' \
-  http://127.0.0.1:8080/api/ac
-```
-
-> **Aqara hub bridging caveat (verified on Hub M200 + Climate Sensor W100):** Aqara does **not** bridge its in-app Scenes through Matter (no `Scenes` / `ScenesManagement` cluster on either the M200 hub or the W100-as-Thermostat endpoint it bridges). Hub-side scenes like `Office_AC26Auto` are only reachable via the Aqara app or their own automations. Use the Thermostat write path above to drive the W100 directly from Matter — the W100 then emits the IR commands to the AC.
-
-### Federation
-
-| Method & Path | Params |
-|---|---|
-| `GET /api/bridge?ip=&port=&api_key=` | Register a remote matter-srv as a logical bridge |
-| `GET /api/bridge/remove?ip=&port=` | Unregister |
-
-When a peer is registered, all of its devices appear in `/api/devices` of this instance, and control commands are forwarded automatically.
-
-### SSE — occupancy stream
-
-```bash
-curl -N -H "X-API-Key: $MATTER_SRV_KEY" \
-  "http://127.0.0.1:8080/api/subscribe?id=dev_b503384e"
-```
-
-```
-data: {"id":"dev_b503384e","occupancy":1,"timestamp":"2025-05-03T17:30:00+00:00"}
-
-: keepalive
-
-data: {"id":"dev_b503384e","occupancy":0,"timestamp":"2025-05-03T17:31:42+00:00"}
-```
-
-A `: keepalive` comment is sent every 15 s so client disconnects are detected even when no events fire.
-
----
+- `GET /api/bridge`, `GET /api/bridge/remove` — register or drop a remote matter-srv as a logical bridge. Its devices then participate in every read and control endpoint above.
 
 ## MCP integration
 
-Start `matter-srv` first, then point an MCP client at `matter-mcp`. The MCP server is a thin HTTP client — every tool call hits the REST API, so the same auth rules apply.
-
-**Claude Desktop:**
-
-```json
-{
-  "mcpServers": {
-    "matter": {
-      "command": "matter-mcp",
-      "args": ["--host", "localhost", "--port", "8080"],
-      "env": { "MATTER_SRV_KEY": "your-key-here" }
-    }
-  }
-}
-```
-
-**Available tools** (one per REST endpoint): `get_devices`, `get_lights`, `get_sensors`, `get_sensor`, `get_status`, `set_device`, `toggle`, `set_level`, `set_mired`, `batch_control`, `set_name`, `remove_name`, `add_bridge`, `remove_bridge`, `register_device`, `refresh`.
-
----
-
-## Federation example
-
-Two instances on the same LAN, each with their own devices:
-
-```bash
-# On host A (10.0.0.10)
-export MATTER_SRV_KEY=keyA
-matter-srv --host 0.0.0.0 --fabric "Floor 1"
-
-# On host B (10.0.0.11)
-export MATTER_SRV_KEY=keyB
-matter-srv --host 0.0.0.0 --fabric "Floor 2"
-
-# From host A — register B
-curl -H "X-API-Key: keyA" \
-  "http://127.0.0.1:8080/api/bridge?ip=10.0.0.11&port=8080&api_key=keyB"
-```
-
-After registration, B's devices appear in `curl http://A:8080/api/devices`, and any `/api/set` against a B-owned ID is transparently forwarded over HTTP. No code execution, no script blobs — just REST.
-
----
+Run `matter-mcp` alongside `matter-srv` and an MCP client sees one tool per REST endpoint: device discovery, light and AC control, batch operations, alias management, commissioning, federation, and refresh. Because MCP rides on top of REST, the API key and error model are identical.
 
 ## Limitations
 
-- Only Matter devices already on the LAN are supported. Non-Matter hardware (Casambi, Yeelight, etc.) requires a third-party adapter that exposes the matter-srv REST API.
-- BLE commissioning is not enabled by default in `python-matter-server` builds — `commission_with_code` uses `network_only=True`. Devices must be discoverable via mDNS.
-- One fabric per instance.
+Only Matter devices already on the LAN are supported. Non-Matter hardware reaches the API through purpose-built adapters that speak the same REST surface — see the related projects below. One fabric per instance.
 
----
+## Related projects
 
-## Development
+This service is the hub for a small constellation of single-purpose peers, all built against the REST and SSE surface above.
 
-```bash
-git clone https://github.com/dongnh/matter_webcontrol.git
-cd matter_webcontrol
-python3.12 -m venv venv
-venv/bin/pip install -e .
+- **light_programmer** — circadian schedule brain and rain-driven overrides for lighting.
+- **matter-weather-sensor** — exposes outdoor weather as Matter temperature, humidity, pressure, rain, and illuminance sensors.
+- **yeelight_webcontrol** — brings Yeelight bulbs onto the same REST contract, including on-device color-flow effects.
+- **matter-homekit-bridge** — publishes Matter devices into Apple Home with stable identities.
+- **matter-homekit-ac** — HomeKit thermostat tiles backed by Matter AC writes.
+- **mac-status-bridge** — Macs as HomeKit occupancy sensors via ping polling.
+- **matter-mac-presence** — Macs as Matter occupancy sensors via HID idle.
+- **matter-appletv-presence** — Apple TV "now playing" as a Matter occupancy sensor.
 
-# Run the smoke tests (uses fake bridges, no hardware needed)
-./dev/start_two.sh
-A_KEY=keyA B_KEY=keyB ./dev/smoke.sh
-./dev/stop.sh
-```
-
-The `dev/` harness boots two `matter-srv` instances with pre-baked fake devices and runs ~20 curl assertions covering auth, control, federation, batch, and metadata.
-
-See [CLAUDE.md](CLAUDE.md) for the architecture rules followed when adding endpoints.
+See [CLAUDE.md](CLAUDE.md) for the architecture rules followed when adding endpoints, and [CHANGELOG.md](CHANGELOG.md) for release notes.
