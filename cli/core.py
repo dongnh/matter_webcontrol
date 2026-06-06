@@ -21,7 +21,7 @@ THERMO_MODE_HEAT = 4
 THERMO_MODE_AUTO = 1
 THERMO_VALID_MODES = {0, 1, 3, 4, 5, 6, 7, 8, 9}
 
-SENSOR_KEYS = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
+SENSOR_KEYS = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact", "rain"]
 MIRED_MIN, MIRED_MAX = 153, 500  # Matter ColorControl spec range
 
 
@@ -659,6 +659,8 @@ class DeviceController:
                 capabilities.append("color_temperature")
             if "occupancy" in states:
                 capabilities.append("occupancy")
+            if "rain" in states:
+                capabilities.append("rain")
             if "system_mode" in states:
                 capabilities.append("ac")
 
@@ -666,6 +668,10 @@ class DeviceController:
                 hw_type = "thermostat"
             elif "occupancy" in states:
                 hw_type = "occupancy_sensor"
+            elif "rain" in states:
+                # Matter Rain Sensor (device type 0x0044): a dedicated BooleanState
+                # sensor, distinct from a contact sensor.
+                hw_type = "rain_sensor"
             elif "color_temp_mireds" in states:
                 hw_type = "color_temperature_light"
             elif "brightness_raw" in states:
