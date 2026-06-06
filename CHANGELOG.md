@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.1
+
+### Fixes
+
+- **Clean install no longer hangs at startup** — `atomicwrites` is now a declared dependency. `python-matter-server` imports it (`matter_server/server/storage.py`) but the version resolved on a fresh install doesn't always pull it in, so the spawned `matter-server` subprocess died with `ModuleNotFoundError: No module named 'atomicwrites'` and `matter-srv` hung at "Waiting for application startup". Declaring it directly makes `pip install .` work without manual intervention.
+
 ## v0.28.0
 
 ### New Features
