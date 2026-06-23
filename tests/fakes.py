@@ -203,3 +203,31 @@ class FakeBridge:
 
     def device_ids_for_node(self, node_id: int) -> list[str]:
         return [d["id"] for d in self.cached_devices if d.get("node_id") == node_id]
+
+
+class StubLogicalClient:
+    """In-memory logical-bridge client that records control calls.
+
+    ``devices`` mirrors LogicalBridgeClient.devices (id -> wire dict) so the
+    manager's get_all_devices() aggregates them; recorded ``calls`` let tests
+    assert that control was forwarded here (logical routing)."""
+
+    def __init__(self, node_id: str, devices: list[dict]):
+        self.node_id = node_id
+        self.devices = {d["id"]: d for d in devices}
+        self.calls: list[tuple] = []
+
+    def refresh(self) -> None:
+        pass
+
+    def set_brightness(self, device_id: str, value: float) -> None:
+        self.calls.append(("set_brightness", device_id, value))
+
+    def set_level(self, device_id: str, level: int) -> None:
+        self.calls.append(("set_level", device_id, level))
+
+    def set_mired(self, device_id: str, mireds: int) -> None:
+        self.calls.append(("set_mired", device_id, mireds))
+
+    def set_ac(self, device_id: str, **kwargs) -> None:
+        self.calls.append(("set_ac", device_id, kwargs))

@@ -47,22 +47,40 @@ class DeviceController:
                 return dev
         return None
 
-    def _find_logical(self, resolved_id: str):
-        """Return (device_dict, client) or (None, None)."""
+    def _route(self, resolved_id: str):
+        """Resolve an id to (kind, device, client) — the single routing truth.
+
+        Logical-first per the architecture rule: a command targeting an id that
+        belongs to a remote logical bridge is forwarded there, not written to a
+        same-id physical device. ``kind`` is "logical" | "physical" | None; for
+        a logical device ``client`` may be None when its bridge is offline.
+        """
         for dev in self.logical.get_all_devices().get("devices", []):
             if dev["id"] == resolved_id:
-                return dev, self.logical.registry.get(dev["node_id"])
-        return None, None
-
-    def _find_state(self, resolved_id: str, key: str):
-        # Logical-first per architecture rule
-        for dev in self.logical.get_all_devices().get("devices", []):
-            if dev["id"] == resolved_id and key in dev.get("states", {}):
-                return dev["states"][key]
+                return "logical", dev, self.logical.registry.get(dev["node_id"])
         phys = self._find_physical(resolved_id)
-        if phys and key in phys.get("states", {}):
-            return phys["states"][key]
-        return None
+        if phys:
+            return "physical", phys, None
+        return None, None, None
+
+    def _iter_devices(self):
+        """Yield (device, names, origin) once per id, physical-first for identity.
+
+        Dedup-by-id is applied here once, so every list endpoint and the status
+        counts agree and a self-/mutual-federation loop can never double-count.
+        """
+        seen: set[str] = set()
+        if self.bridge and self.bridge.cached_devices:
+            for dev in self.bridge.cached_devices:
+                if dev["id"] in seen:
+                    continue
+                seen.add(dev["id"])
+                yield dev, self._resolved_names(dev), "physical"
+        for dev in self.logical.get_all_devices().get("devices", []):
+            if dev["id"] in seen:
+                continue
+            seen.add(dev["id"])
+            yield dev, self._resolved_names(dev), "logical"
 
     @staticmethod
     def _is_ac(states: dict) -> bool:
@@ -86,51 +104,32 @@ class DeviceController:
     def _occupancy_ts(self, device_id: str):
         return self.bridge.occupancy_history.get(device_id) if self.bridge else None
 
-    def _all_devices_raw(self) -> list[dict]:
-        result = []
-        if self.bridge and self.bridge.cached_devices:
-            result.extend(self.bridge.cached_devices)
-        result.extend(self.logical.get_all_devices().get("devices", []))
-        return result
-
     # -- Queries -------------------------------------------------------------
 
     def get_devices(self) -> list[dict]:
         result = []
-        if self.bridge and self.bridge.cached_devices:
-            for dev in self.bridge.cached_devices:
-                copy = dict(dev)
-                copy["states"] = dict(dev.get("states", {}))
-                if copy["states"].get("color_temp_mireds") == 0:
-                    copy["states"].pop("color_temp_mireds", None)
-                copy["names"] = self._resolved_names(dev)
-                result.append(copy)
-        for dev in self.logical.get_all_devices().get("devices", []):
+        for dev, names, _origin in self._iter_devices():
             copy = dict(dev)
-            copy["names"] = self._resolved_names(dev)
+            copy["states"] = dict(dev.get("states", {}))
+            if copy["states"].get("color_temp_mireds") == 0:
+                copy["states"].pop("color_temp_mireds", None)
+            copy["names"] = names
             result.append(copy)
         return result
 
     def get_lights(self) -> list[dict]:
         lights = []
-        if self.bridge:
-            for dev in self.bridge.cached_devices:
-                entry = serializers.build_light(dev, self._resolved_names(dev))
-                if entry:
-                    lights.append(entry)
-        for dev in self.logical.get_all_devices().get("devices", []):
-            entry = serializers.build_light(dev, self._resolved_names(dev))
+        for dev, names, _origin in self._iter_devices():
+            entry = serializers.build_light(dev, names)
             if entry:
                 lights.append(entry)
         return lights
 
     def get_sensors(self) -> list[dict]:
-        if not self.bridge:
-            return []
         sensors = []
-        for dev in self.bridge.cached_devices:
+        for dev, names, _origin in self._iter_devices():
             entry = serializers.build_sensor(
-                dev, self._resolved_names(dev), self._occupancy_ts(dev["id"])
+                dev, names, self._occupancy_ts(dev["id"])
             )
             if entry:
                 sensors.append(entry)
@@ -138,62 +137,46 @@ class DeviceController:
 
     def get_climate(self) -> list[dict]:
         out = []
-        if self.bridge:
-            for dev in self.bridge.cached_devices:
-                entry = serializers.build_climate(dev, self._resolved_names(dev))
-                if entry:
-                    out.append(entry)
-        for dev in self.logical.get_all_devices().get("devices", []):
-            entry = serializers.build_climate(dev, self._resolved_names(dev))
+        for dev, names, _origin in self._iter_devices():
+            entry = serializers.build_climate(dev, names)
             if entry:
                 out.append(entry)
         return out
 
     def get_climate_one(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
-        for dev in self._all_devices_raw():
-            if dev.get("id") != resolved:
-                continue
-            entry = serializers.build_climate(dev, self._resolved_names(dev))
-            if entry:
-                return entry
-            raise ValueError(f"Device {resolved} has no climate data")
-        raise KeyError(f"Device {resolved} not found")
+        _kind, dev, _client = self._route(resolved)
+        if dev is None:
+            raise KeyError(f"Device {resolved} not found")
+        entry = serializers.build_climate(dev, self._resolved_names(dev))
+        if entry:
+            return entry
+        raise ValueError(f"Device {resolved} has no climate data")
 
     def get_sensor(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
-        # Logical-first
-        for dev in self.logical.get_all_devices().get("devices", []):
-            if dev["id"] == resolved:
-                entry = serializers.build_sensor(
-                    dev, self._resolved_names(dev), self._occupancy_ts(resolved)
-                )
-                if entry:
-                    return entry
-                raise ValueError("Device exists but contains no sensor clusters")
-        for dev in self.bridge.cached_devices:
-            if dev["id"] != resolved:
-                continue
-            entry = serializers.build_sensor(
-                dev, self._resolved_names(dev), self._occupancy_ts(resolved)
-            )
-            if entry:
-                return entry
-            raise ValueError("Device exists but contains no sensor clusters")
-        raise KeyError("Sensor not found in cache")
+        _kind, dev, _client = self._route(resolved)
+        if dev is None:
+            raise KeyError("Sensor not found in cache")
+        entry = serializers.build_sensor(
+            dev, self._resolved_names(dev), self._occupancy_ts(resolved)
+        )
+        if entry:
+            return entry
+        raise ValueError("Device exists but contains no sensor clusters")
 
     def get_level(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
-        val = self._find_state(resolved, "brightness_raw")
-        if val is not None:
-            return {"id": resolved, "level": val}
+        _kind, dev, _client = self._route(resolved)
+        if dev is not None and "brightness_raw" in dev.get("states", {}):
+            return {"id": resolved, "level": dev["states"]["brightness_raw"]}
         raise KeyError("Device not found or level state unsupported")
 
     def get_mired(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
-        val = self._find_state(resolved, "color_temp_mireds")
-        if val is not None:
-            return {"id": resolved, "mireds": val}
+        _kind, dev, _client = self._route(resolved)
+        if dev is not None and "color_temp_mireds" in dev.get("states", {}):
+            return {"id": resolved, "mireds": dev["states"]["color_temp_mireds"]}
         raise KeyError("Device not found or color temperature unsupported")
 
     def get_status(self) -> dict:
@@ -203,13 +186,10 @@ class DeviceController:
         sensors_active = 0
         acs_on = 0
         acs_off = 0
-        seen: set[str] = set()
+        total = 0
 
-        for dev in self._all_devices_raw():
-            dev_id = dev.get("id")
-            if not dev_id or dev_id in seen:
-                continue
-            seen.add(dev_id)
+        for dev, _names, _origin in self._iter_devices():
+            total += 1
             states = dev.get("states", {})
             if "on_off" in states or "brightness_raw" in states:
                 if states.get("on_off"):
@@ -231,7 +211,7 @@ class DeviceController:
             "acs_on": acs_on,
             "acs_off": acs_off,
             "logical_bridges": len(self.logical.registry),
-            "total_devices": len(seen),
+            "total_devices": total,
         }
 
     # -- Control -------------------------------------------------------------
@@ -240,27 +220,28 @@ class DeviceController:
                          brightness: Optional[float] = None,
                          temperature: Optional[int] = None) -> dict:
         resolved = self._resolve(device_id)
+        kind, dev, client = self._route(resolved)
 
         # AC (Thermostat) — only on/off via brightness. Setpoint/mode go via set_ac.
         # Ignore `temperature` here since it means Kelvin (color), not °C.
-        phys = self._find_physical(resolved)
-        if phys and self._is_ac(phys.get("states", {})):
+        # Logical-first via _route, so a same-id physical AC can't shadow a
+        # logical one (the old code was physical-first here only).
+        if dev is not None and self._is_ac(dev.get("states", {})):
             if brightness is None:
                 return {"status": "noop", "id": resolved, "type": "ac"}
             return await self.set_ac(resolved, on=(brightness > 0))
 
         # Logical device
-        target, client = self._find_logical(resolved)
-        if target:
+        if kind == "logical":
             if not client:
                 raise RuntimeError("Logical bridge client offline")
             if brightness is not None:
                 await asyncio.to_thread(
-                    client.set_brightness, target["id"], conv.clamp(brightness, 0.0, 1.0)
+                    client.set_brightness, dev["id"], conv.clamp(brightness, 0.0, 1.0)
                 )
             if temperature is not None and temperature > 0:
                 mireds = conv.kelvin_to_mireds(temperature)
-                await asyncio.to_thread(client.set_mired, target["id"], mireds)
+                await asyncio.to_thread(client.set_mired, dev["id"], mireds)
             return {"status": "success", "id": resolved, "type": "logical"}
 
         # Physical device
@@ -289,14 +270,16 @@ class DeviceController:
 
     async def toggle(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
+        _kind, dev, _client = self._route(resolved)
+        if dev is None:
+            raise KeyError(f"Device {resolved} not found")
+        states = dev.get("states", {})
 
         # AC: SystemMode == 0 means off, anything else means on
-        sm = self._find_state(resolved, "system_mode")
-        if sm is not None:
-            return await self.set_ac(resolved, on=(sm == 0))
+        if self._is_ac(states):
+            return await self.set_ac(resolved, on=(states.get("system_mode") == 0))
 
-        is_on = self._find_state(resolved, "on_off")
-        if is_on:
+        if states.get("on_off"):
             return await self.set_device(resolved, brightness=0.0)
         else:
             return await self.set_device(resolved, brightness=1.0)
@@ -305,11 +288,11 @@ class DeviceController:
         resolved = self._resolve(device_id)
         level = int(conv.clamp(level, 0, 254))
 
-        target, client = self._find_logical(resolved)
-        if target:
+        kind, dev, client = self._route(resolved)
+        if kind == "logical":
             if not client:
                 raise RuntimeError("Logical bridge client offline")
-            await asyncio.to_thread(client.set_level, target["id"], level)
+            await asyncio.to_thread(client.set_level, dev["id"], level)
             return {"status": "success", "id": resolved, "level": level, "type": "logical"}
 
         self._verify_hardware()
@@ -326,11 +309,11 @@ class DeviceController:
         resolved = self._resolve(device_id)
         mireds = conv.clamp_mireds(mireds)
 
-        target, client = self._find_logical(resolved)
-        if target:
+        kind, dev, client = self._route(resolved)
+        if kind == "logical":
             if not client:
                 raise RuntimeError("Logical bridge client offline")
-            await asyncio.to_thread(client.set_mired, target["id"], mireds)
+            await asyncio.to_thread(client.set_mired, dev["id"], mireds)
             return {"status": "success", "id": resolved, "mireds": mireds, "type": "logical"}
 
         self._verify_hardware()
@@ -389,26 +372,17 @@ class DeviceController:
 
     def get_acs(self) -> list[dict]:
         out = []
-        if self.bridge:
-            out.extend(
-                serializers.build_ac(dev, self._resolved_names(dev))
-                for dev in self.bridge.cached_devices
-                if self._is_ac(dev.get("states", {}))
-            )
-        for dev in self.logical.get_all_devices().get("devices", []):
+        for dev, names, _origin in self._iter_devices():
             if self._is_ac(dev.get("states", {})):
-                out.append(serializers.build_ac(dev, self._resolved_names(dev)))
+                out.append(serializers.build_ac(dev, names))
         return out
 
     def get_ac(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
-        log_dev, _ = self._find_logical(resolved)
-        if log_dev and self._is_ac(log_dev.get("states", {})):
-            return serializers.build_ac(log_dev, self._resolved_names(log_dev))
-        phys = self._find_physical(resolved)
-        if not phys or not self._is_ac(phys.get("states", {})):
-            raise KeyError(f"Device {resolved} is not an AC")
-        return serializers.build_ac(phys, self._resolved_names(phys))
+        _kind, dev, _client = self._route(resolved)
+        if dev is not None and self._is_ac(dev.get("states", {})):
+            return serializers.build_ac(dev, self._resolved_names(dev))
+        raise KeyError(f"Device {resolved} is not an AC")
 
     async def set_ac(self, device_id: str,
                      on: Optional[bool] = None,
@@ -422,11 +396,13 @@ class DeviceController:
         - fan_speed (0-100) only forwarded to logical-bridge devices that support it.
         """
         resolved = self._resolve(device_id)
+        kind, dev, client = self._route(resolved)
 
         # Logical-first: if the device belongs to a remote logical bridge,
         # forward via REST instead of writing Matter clusters directly.
-        log_dev, client = self._find_logical(resolved)
-        if log_dev and client and self._is_ac(log_dev.get("states", {})):
+        if kind == "logical" and self._is_ac(dev.get("states", {})):
+            if not client:
+                raise RuntimeError("Logical bridge client offline")
             if mode is not None and int(mode) not in THERMO_VALID_MODES:
                 raise ValueError(f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}")
             await asyncio.to_thread(
@@ -445,7 +421,7 @@ class DeviceController:
             return {"status": "success", "id": resolved, "wrote": wrote, "via": "logical"}
 
         self._verify_hardware()
-        phys = self._find_physical(resolved)
+        phys = dev if kind == "physical" else self._find_physical(resolved)
         if not phys or not self._is_ac(phys.get("states", {})):
             raise KeyError(f"Device {resolved} is not an AC")
 
@@ -578,10 +554,10 @@ class DeviceController:
         informational (capabilities + current states).
         """
         metadata = []
-        for dev in self._all_devices_raw():
+        for dev, names, _origin in self._iter_devices():
             if not dev.get("id"):
                 continue
-            entry = serializers.build_metadata(dev, self._resolved_names(dev))
+            entry = serializers.build_metadata(dev, names)
             if entry:
                 metadata.append(entry)
 

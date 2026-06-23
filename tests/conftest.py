@@ -31,6 +31,19 @@ def _fresh_logical() -> LogicalBridgeManager:
 
 
 @pytest.fixture
+def logical_manager():
+    """Factory: build a LogicalBridgeManager pre-populated with stub clients."""
+
+    def _make(*clients) -> LogicalBridgeManager:
+        mgr = _fresh_logical()
+        for c in clients:
+            mgr.registry[c.node_id] = c
+        return mgr
+
+    return _make
+
+
+@pytest.fixture
 def controller_with_fixture():
     """Factory: (fixture_name, logical?) -> (DeviceController, FakeBridge)."""
 
