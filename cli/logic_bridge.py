@@ -107,7 +107,7 @@ class LogicalBridgeClient:
         if on is not None:
             body["on"] = bool(on)
         if mode is not None:
-            body["system_mode"] = int(mode)
+            body["mode"] = int(mode)  # canonical field (system_mode is its alias)
         if setpoint is not None:
             body["setpoint"] = float(setpoint)
         if fan_speed is not None:

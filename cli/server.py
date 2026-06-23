@@ -218,7 +218,10 @@ async def add_bridge_api(payload: BridgePayload):
 
 @app.post("/api/bridge/remove")
 async def remove_bridge_api(payload: BridgeRemovePayload):
-    return _wrap(controller.remove_bridge, payload.ip, payload.port)
+    # remove_bridge does blocking cache file I/O — offload off the event loop.
+    return await _wrap_async(
+        asyncio.to_thread(controller.remove_bridge, payload.ip, payload.port)
+    )
 
 
 @app.post("/api/register")

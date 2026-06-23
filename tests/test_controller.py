@@ -199,3 +199,18 @@ async def test_register_device_name_not_applied(controller_with_fixture):
     result = await ctrl.register_device("1234-567-8901", name="Ghost")
     assert result["assigned_id"] is None
     assert result["name_not_applied"] is True
+
+
+def test_logical_client_set_ac_uses_canonical_mode():
+    # The federation wire must use the canonical `mode` field, not its alias
+    # `system_mode` (API4), so it also works against older peers.
+    from cli.logic_bridge import LogicalBridgeClient
+
+    client = LogicalBridgeClient("127.0.0.1", 9, None)
+    captured: dict = {}
+    client._request = lambda path, method="GET", query=None, body=None: captured.update(  # type: ignore[method-assign]
+        body or {}
+    )
+    client.set_ac("dev_x", on=True, mode=4, setpoint=22.0)
+    assert captured.get("mode") == 4
+    assert "system_mode" not in captured
