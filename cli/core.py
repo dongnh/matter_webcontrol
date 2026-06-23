@@ -13,8 +13,12 @@ from cli import conversions as conv
 from cli import serializers
 from cli.constants import (
     ATTR_COOLING_SETPOINT,
+    ATTR_HEATING_SETPOINT,
     ATTR_SYSTEM_MODE,
     SENSOR_KEYS,
+    THERMO_COOL_MODES,
+    THERMO_HEAT_MODES,
+    THERMO_MODE_AUTO,
     THERMO_MODE_COOL,
     THERMO_MODE_OFF,
     THERMO_VALID_MODES,
@@ -396,11 +400,25 @@ class DeviceController:
             except Exception:
                 pass
             wrote = {}
-            if mode is not None: wrote["system_mode"] = int(mode)
-            elif on is False: wrote["system_mode"] = THERMO_MODE_OFF
-            if setpoint is not None: wrote["heating_setpoint"] = conv.unit_to_centi(setpoint)
-            if fan_speed is not None: wrote["fan_speed"] = int(fan_speed)
+            if mode is not None:
+                wrote["system_mode"] = int(mode)
+            elif on is False:
+                wrote["system_mode"] = THERMO_MODE_OFF
+            elif on is True:
+                # Mirror the physical branch: report the mode we asked the
+                # remote to resume (last non-zero, default Cool) — C4.
+                cur = dev["states"].get("system_mode") or 0
+                wrote["system_mode"] = cur if cur != 0 else THERMO_MODE_COOL
+            if setpoint is not None:
+                wrote["setpoint"] = conv.unit_to_centi(setpoint)  # neutral key (C3)
+            if fan_speed is not None:
+                wrote["fan_speed"] = int(fan_speed)
             return {"status": "success", "id": resolved, "wrote": wrote, "via": "logical"}
+
+        # fan_speed is not a Matter Thermostat attribute — refuse rather than
+        # silently dropping it on a mutation (API2).
+        if fan_speed is not None:
+            raise ValueError("fan_speed not supported on physical Matter ACs")
 
         self._verify_hardware()
         phys = dev if kind == "physical" else self._find_physical(resolved)
@@ -408,7 +426,8 @@ class DeviceController:
             raise KeyError(f"Device {resolved} is not an AC")
 
         node_id, ep_id = phys["node_id"], phys["endpoint_id"]
-        wrote = []
+        wrote: dict = {}
+        failed: dict = {}
 
         target_mode = None
         if mode is not None:
@@ -421,25 +440,53 @@ class DeviceController:
         elif on is False:
             target_mode = THERMO_MODE_OFF
 
+        # The setpoint attribute depends on the *effective* mode — the one being
+        # set this call, else the device's current mode (C2). Writing the cooling
+        # setpoint while in Heat used to silently no-op the active heating setpoint.
+        effective_mode = (
+            target_mode if target_mode is not None
+            else phys["states"].get("system_mode")
+        )
+
+        async def _write(label: str, attr: int, value: int) -> None:
+            try:
+                await self.bridge.client.write_attribute(
+                    node_id=node_id,
+                    attribute_path=f"{ep_id}/{THERMOSTAT_CLUSTER}/{attr}",
+                    value=value,
+                )
+                wrote[label] = value
+            except Exception as e:  # report which writes landed (E3)
+                failed[label] = str(e)
+
         if target_mode is not None:
-            await self.bridge.client.write_attribute(
-                node_id=node_id,
-                attribute_path=f"{ep_id}/{THERMOSTAT_CLUSTER}/{ATTR_SYSTEM_MODE}",
-                value=target_mode,
-            )
-            wrote.append(("system_mode", target_mode))
+            await _write("system_mode", ATTR_SYSTEM_MODE, target_mode)
 
         if setpoint is not None:
             sp_centi = conv.unit_to_centi(setpoint)
-            await self.bridge.client.write_attribute(
-                node_id=node_id,
-                attribute_path=f"{ep_id}/{THERMOSTAT_CLUSTER}/{ATTR_COOLING_SETPOINT}",
-                value=sp_centi,
-            )
-            wrote.append(("cooling_setpoint", sp_centi))
+            if effective_mode == THERMO_MODE_AUTO:
+                # Auto has a two-point deadband; a single scalar is ambiguous.
+                raise ValueError(
+                    "Auto mode needs explicit cooling/heating setpoints; "
+                    "a single setpoint is ambiguous"
+                )
+            elif effective_mode in THERMO_HEAT_MODES:
+                await _write("setpoint", ATTR_HEATING_SETPOINT, sp_centi)
+            elif effective_mode in THERMO_COOL_MODES:
+                await _write("setpoint", ATTR_COOLING_SETPOINT, sp_centi)
+            else:
+                # Off / FanOnly / Dry / Sleep / unknown — default to cooling.
+                await _write("setpoint", ATTR_COOLING_SETPOINT, sp_centi)
 
-        self.bridge.sync()
-        return {"status": "success", "id": resolved, "wrote": dict(wrote)}
+        self.bridge.sync()  # refresh cache even on a partial write
+        result = {
+            "status": "success" if not failed else "partial",
+            "id": resolved,
+            "wrote": wrote,
+        }
+        if failed:
+            result["failed"] = failed
+        return result
 
     # -- Bridges -------------------------------------------------------------
 
@@ -475,20 +522,24 @@ class DeviceController:
         if new_node_id is not None:
             deduped = await self.bridge.dedupe_by_unique_id(new_node_id)
 
-        # Persist alias to whichever new device showed up
+        # Attach the alias to the exact device(s) of the newly-commissioned
+        # node — not "first unnamed" (C1/A6). Surface name_not_applied (E7).
         assigned = None
+        name_not_applied = False
         if name:
             self.bridge.sync()
-            existing_ids = {d["id"] for d in self.bridge.cached_devices}
-            # Pick the device that appeared after commission (heuristic: not already named)
-            for dev in self.bridge.cached_devices:
-                if dev["id"] in existing_ids and not self.bridge.names_for(dev["id"]):
-                    try:
-                        self.set_name(dev["id"], name)
-                        assigned = dev["id"]
-                        break
-                    except ValueError:
-                        continue
+            new_ids = (
+                self.bridge.device_ids_for_node(new_node_id)
+                if new_node_id is not None else []
+            )
+            for dev_id in new_ids:
+                try:
+                    self.set_name(dev_id, name)
+                    assigned = dev_id
+                    break
+                except ValueError:
+                    continue
+            name_not_applied = assigned is None
         return {
             "status": "success",
             "code": code,
@@ -496,6 +547,7 @@ class DeviceController:
             "node_id": new_node_id,
             "assigned_id": assigned,
             "name": name,
+            "name_not_applied": name_not_applied,
             "deduped_nodes": deduped,
         }
 

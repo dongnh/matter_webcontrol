@@ -211,6 +211,9 @@ class FakeBridge:
     def device_ids_for_node(self, node_id: int) -> list[str]:
         return [d["id"] for d in self.cached_devices if d.get("node_id") == node_id]
 
+    async def dedupe_by_unique_id(self, new_node_id: int) -> list[int]:
+        return []  # no phantom nodes in fixtures
+
 
 class StubLogicalClient:
     """In-memory logical-bridge client that records control calls.

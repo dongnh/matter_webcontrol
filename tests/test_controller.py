@@ -83,3 +83,93 @@ async def test_toggle_unknown_device_raises(controller_with_fixture):
     ctrl, _bridge = controller_with_fixture("A")
     with pytest.raises(KeyError):
         await ctrl.toggle("dev_nope")
+
+
+# -- Step 7: set_ac setpoint-by-mode (C2/C3/E3/API2) ------------------------
+
+@pytest.mark.asyncio
+async def test_set_ac_heat_mode_writes_heating_setpoint(controller_with_fixture):
+    ctrl, bridge = controller_with_fixture("ac")  # physical AC, currently Cool
+    result = await ctrl.set_ac("dev_ac000001", mode=4, setpoint=22.0)  # Heat
+    paths = [w[1] for w in bridge.client.writes]
+    assert "1/513/18" in paths      # heating_setpoint
+    assert "1/513/17" not in paths  # NOT cooling_setpoint
+    assert result["wrote"]["setpoint"] == 2200  # neutral key (C3)
+
+
+@pytest.mark.asyncio
+async def test_set_ac_cool_mode_writes_cooling_setpoint(controller_with_fixture):
+    ctrl, bridge = controller_with_fixture("ac")  # current mode Cool(3)
+    result = await ctrl.set_ac("dev_ac000001", setpoint=24.0)  # effective = current
+    assert "1/513/17" in [w[1] for w in bridge.client.writes]
+    assert result["wrote"]["setpoint"] == 2400
+
+
+@pytest.mark.asyncio
+async def test_set_ac_fan_speed_rejected_on_physical(controller_with_fixture):
+    ctrl, _bridge = controller_with_fixture("ac")
+    with pytest.raises(ValueError):
+        await ctrl.set_ac("dev_ac000001", fan_speed=50)  # API2
+
+
+@pytest.mark.asyncio
+async def test_set_ac_auto_single_setpoint_rejected(controller_with_fixture):
+    ctrl, _bridge = controller_with_fixture("ac")
+    with pytest.raises(ValueError):
+        await ctrl.set_ac("dev_ac000001", mode=1, setpoint=24.0)  # Auto is ambiguous
+
+
+@pytest.mark.asyncio
+async def test_set_ac_partial_write_reported(controller_with_fixture, monkeypatch):
+    ctrl, bridge = controller_with_fixture("ac")
+    orig = bridge.client.write_attribute
+
+    async def flaky(node_id, attribute_path, value):
+        if attribute_path.endswith(("/17", "/18")):
+            raise RuntimeError("setpoint write failed")
+        return await orig(node_id, attribute_path, value)
+
+    monkeypatch.setattr(bridge.client, "write_attribute", flaky)
+    result = await ctrl.set_ac("dev_ac000001", mode=3, setpoint=24.0)
+    assert result["status"] == "partial"
+    assert "system_mode" in result["wrote"]   # mode write landed
+    assert "setpoint" in result["failed"]      # setpoint write reported failed
+
+
+@pytest.mark.asyncio
+async def test_logical_set_ac_neutral_key_and_on(controller_with_fixture, logical_manager):
+    client = StubLogicalClient(
+        "peer:1",
+        [{"id": "dev_lac", "node_id": "peer:1", "endpoint_id": 1,
+          "states": {"system_mode": 3}}],
+    )
+    ctrl, _bridge = controller_with_fixture("empty", logical=logical_manager(client))
+
+    r = await ctrl.set_ac("dev_lac", setpoint=26.0)
+    assert r["via"] == "logical"
+    assert r["wrote"]["setpoint"] == 2600          # neutral key, not heating_setpoint (C3)
+    assert "heating_setpoint" not in r["wrote"]
+
+    r2 = await ctrl.set_ac("dev_lac", on=True)
+    assert r2["wrote"]["system_mode"] == 3          # C4: no longer omitted
+
+
+# -- Step 7: register_device names the right device (C1/A6/E7) ---------------
+
+@pytest.mark.asyncio
+async def test_register_device_names_exact_node(controller_with_fixture):
+    ctrl, bridge = controller_with_fixture("ac")  # dev_ac000001 is on node_id 5
+    bridge.command_responses["commission_with_code"] = {"node_id": 5}
+    result = await ctrl.register_device("1234-567-8901", name="Bedroom AC")
+    assert result["assigned_id"] == "dev_ac000001"
+    assert result["name_not_applied"] is False
+    assert bridge.names_for("dev_ac000001") == ["Bedroom AC"]
+
+
+@pytest.mark.asyncio
+async def test_register_device_name_not_applied(controller_with_fixture):
+    ctrl, bridge = controller_with_fixture("ac")
+    bridge.command_responses["commission_with_code"] = {"node_id": 999}  # no such device
+    result = await ctrl.register_device("1234-567-8901", name="Ghost")
+    assert result["assigned_id"] is None
+    assert result["name_not_applied"] is True
