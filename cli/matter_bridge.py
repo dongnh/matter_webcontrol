@@ -25,6 +25,8 @@ SENSOR_CLUSTERS = {
 SCHEMA_VERSION = "stable_md5_v1"
 # Coalesce devices_cache disk writes to at most one per this many seconds.
 FLUSH_INTERVAL = 3.0
+# Bound each SSE subscriber queue so a slow consumer can't grow it unbounded.
+OCCUPANCY_QUEUE_MAXSIZE = 100
 
 
 class MatterBridgeServer:
@@ -195,6 +197,73 @@ class MatterBridgeServer:
     def is_ready(self) -> bool:
         return self.client is not None
 
+    # -- Public facade (core/server never touch privates) --------------------
+
+    def sync(self) -> None:
+        """Public wrapper for the internal cache rebuild."""
+        self._update_cache()
+
+    def names_for(self, device_id: str) -> list:
+        return self.device_names.get(device_id, [])
+
+    def add_alias(self, device_id: str, name: str) -> list:
+        """Assign an alias, enforcing global uniqueness. Returns the new list.
+
+        Encapsulates the conflict check that used to live in core.set_name."""
+        for existing_id, names in self.device_names.items():
+            if name in names and existing_id != device_id:
+                raise ValueError(
+                    "Name conflict: Alias already assigned to another device"
+                )
+        self.device_names.setdefault(device_id, [])
+        if name not in self.device_names[device_id]:
+            self.device_names[device_id].append(name)
+            self._save_names_cache()
+        return self.device_names[device_id]
+
+    def remove_alias(self, device_id: str, name: str) -> list:
+        names = self.device_names.get(device_id, [])
+        if name not in names:
+            raise KeyError(f"Alias '{name}' not found on device {device_id}")
+        names.remove(name)
+        if not names:
+            del self.device_names[device_id]
+        self._save_names_cache()
+        return self.device_names.get(device_id, [])
+
+    def device_ids_for_node(self, node_id: int) -> list[str]:
+        return [d["id"] for d in self.cached_devices if d.get("node_id") == node_id]
+
+    def occupancy_last_active(self, device_id: str):
+        return self.occupancy_history.get(device_id)
+
+    def subscribe_occupancy(self, device_id: str) -> "asyncio.Queue":
+        queue: asyncio.Queue = asyncio.Queue(maxsize=OCCUPANCY_QUEUE_MAXSIZE)
+        self.occupancy_subscribers.setdefault(device_id, []).append(queue)
+        return queue
+
+    def unsubscribe(self, queue) -> None:
+        """Remove a subscriber queue and drop the id key when its list empties."""
+        for device_id, subs in list(self.occupancy_subscribers.items()):
+            if queue in subs:
+                subs.remove(queue)
+            if not subs:
+                self.occupancy_subscribers.pop(device_id, None)
+
+    def prune_stale_occupancy(self) -> None:
+        """Drop occupancy history/subscribers for devices no longer in the cache."""
+        live = {d["id"] for d in self.cached_devices}
+        removed = [k for k in list(self.occupancy_history) if k not in live]
+        for k in removed:
+            self.occupancy_history.pop(k, None)
+        for k in [k for k in list(self.occupancy_subscribers) if k not in live]:
+            self.occupancy_subscribers.pop(k, None)
+        if removed:
+            try:
+                self._save_json(paths.occupancy_cache(), self.occupancy_history)
+            except OSError:
+                pass
+
     # -- Event handling & cache update ---------------------------------------
 
     def _on_event(self, event, data):
@@ -258,6 +327,7 @@ class MatterBridgeServer:
 
         if removed:
             self._update_cache()
+            self.prune_stale_occupancy()
         return removed
 
     def _run_id_migration_once(self, devices: list[dict]) -> None:
@@ -359,7 +429,10 @@ class MatterBridgeServer:
                                 if cur != prev and device_id in self.occupancy_subscribers:
                                     ts = int(time.time())
                                     for q in self.occupancy_subscribers[device_id]:
-                                        q.put_nowait((cur, ts))
+                                        try:
+                                            q.put_nowait((cur, ts))
+                                        except asyncio.QueueFull:
+                                            pass  # slow SSE consumer; drop event
 
                                 if cur == 1 and prev == 0:
                                     self.occupancy_history[device_id] = int(time.time())

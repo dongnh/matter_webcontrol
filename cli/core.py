@@ -98,11 +98,11 @@ class DeviceController:
 
     def _resolved_names(self, dev: dict) -> list:
         """Merge locally-assigned aliases with any names on a remote device."""
-        local = self.bridge.device_names.get(dev["id"], []) if self.bridge else []
+        local = self.bridge.names_for(dev["id"]) if self.bridge else []
         return serializers.resolved_names(dev, local)
 
     def _occupancy_ts(self, device_id: str):
-        return self.bridge.occupancy_history.get(device_id) if self.bridge else None
+        return self.bridge.occupancy_last_active(device_id) if self.bridge else None
 
     # -- Queries -------------------------------------------------------------
 
@@ -342,31 +342,13 @@ class DeviceController:
 
     def set_name(self, device_id: str, name: str) -> dict:
         resolved = self._resolve(device_id)
-
-        for existing_id, names in self.bridge.device_names.items():
-            if name in names and existing_id != resolved:
-                raise ValueError("Name conflict: Alias already assigned to another device")
-
-        self.bridge.device_names.setdefault(resolved, [])
-        if name not in self.bridge.device_names[resolved]:
-            self.bridge.device_names[resolved].append(name)
-            self.bridge._save_names_cache()
-
-        return {"status": "success", "id": resolved, "names": self.bridge.device_names[resolved]}
+        names = self.bridge.add_alias(resolved, name)
+        return {"status": "success", "id": resolved, "names": names}
 
     def remove_name(self, device_id: str, name: str) -> dict:
         resolved = self._resolve(device_id)
-
-        names = self.bridge.device_names.get(resolved, [])
-        if name not in names:
-            raise KeyError(f"Alias '{name}' not found on device {resolved}")
-
-        names.remove(name)
-        if not names:
-            del self.bridge.device_names[resolved]
-        self.bridge._save_names_cache()
-
-        return {"status": "success", "id": resolved, "names": self.bridge.device_names.get(resolved, [])}
+        names = self.bridge.remove_alias(resolved, name)
+        return {"status": "success", "id": resolved, "names": names}
 
     # -- Air conditioners (Thermostat-cluster devices) -----------------------
 
@@ -456,7 +438,7 @@ class DeviceController:
             )
             wrote.append(("cooling_setpoint", sp_centi))
 
-        self.bridge._update_cache()
+        self.bridge.sync()
         return {"status": "success", "id": resolved, "wrote": dict(wrote)}
 
     # -- Bridges -------------------------------------------------------------
@@ -496,11 +478,11 @@ class DeviceController:
         # Persist alias to whichever new device showed up
         assigned = None
         if name:
-            self.bridge._update_cache()
+            self.bridge.sync()
             existing_ids = {d["id"] for d in self.bridge.cached_devices}
             # Pick the device that appeared after commission (heuristic: not already named)
             for dev in self.bridge.cached_devices:
-                if dev["id"] in existing_ids and dev["id"] not in self.bridge.device_names:
+                if dev["id"] in existing_ids and not self.bridge.names_for(dev["id"]):
                     try:
                         self.set_name(dev["id"], name)
                         assigned = dev["id"]
@@ -521,14 +503,15 @@ class DeviceController:
         """Unpair a fabric node by node_id. Use to clean up phantom entries."""
         self._verify_hardware()
         await self.bridge.client.send_command("remove_node", node_id=node_id)
-        self.bridge._update_cache()
+        self.bridge.sync()
+        self.bridge.prune_stale_occupancy()
         return {"status": "success", "removed_node_id": node_id}
 
     def refresh(self) -> dict:
         matter_status = "skipped"
         if self.bridge and self.bridge.is_ready():
             try:
-                self.bridge._update_cache()
+                self.bridge.sync()
                 matter_status = "success"
             except Exception as e:
                 logging.error(f"Matter bridge refresh error: {e}")

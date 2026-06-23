@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
     controller = DeviceController(bridge, logical)
 
     if bridge.is_ready():
-        bridge._update_cache()
+        bridge.sync()
 
     result = logical.refresh_bridges()
     logging.info(
@@ -251,10 +251,7 @@ async def mired_api(request: Request, payload: Optional[MiredPayload] = None):
 @app.get("/api/subscribe")
 async def subscribe_api(request: Request, id: str):
     resolved = id
-    controller.bridge.occupancy_subscribers.setdefault(resolved, [])
-
-    queue = asyncio.Queue()
-    controller.bridge.occupancy_subscribers[resolved].append(queue)
+    queue = controller.bridge.subscribe_occupancy(resolved)
 
     async def stream():
         import json as _json
@@ -273,9 +270,7 @@ async def subscribe_api(request: Request, id: str):
         except asyncio.CancelledError:
             pass
         finally:
-            subs = controller.bridge.occupancy_subscribers.get(resolved, [])
-            if queue in subs:
-                subs.remove(queue)
+            controller.bridge.unsubscribe(queue)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

@@ -199,6 +199,13 @@ class FakeBridge:
             if not subs:
                 self.occupancy_subscribers.pop(device_id, None)
 
+    def prune_stale_occupancy(self) -> None:
+        live = {d["id"] for d in self.cached_devices}
+        for k in [k for k in list(self.occupancy_history) if k not in live]:
+            self.occupancy_history.pop(k, None)
+        for k in [k for k in list(self.occupancy_subscribers) if k not in live]:
+            self.occupancy_subscribers.pop(k, None)
+
     # -- node facade --------------------------------------------------------
 
     def device_ids_for_node(self, node_id: int) -> list[str]:
