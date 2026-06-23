@@ -35,6 +35,7 @@ SENSOR_KEYS = [
     "humidity",
     "occupancy",
     "contact",
+    "rain",
 ]
 
 # -- Color temperature -------------------------------------------------------

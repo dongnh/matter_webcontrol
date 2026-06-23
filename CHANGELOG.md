@@ -22,6 +22,11 @@
 - **`--data-dir` / `MATTER_DATA_DIR`** pins one directory for all caches and the
   Matter fabric storage; the absolute storage path is logged at startup.
 - **`--log-level` / `MATTER_LOG_LEVEL`** on both `matter-srv` and `matter-mcp`.
+- **Rain sensor** — a dedicated `rain` state (Matter Rain Sensor, device type
+  `0x0044`) is recognised as a sensor: it surfaces in `/api/sensors` and
+  `/api/metadata` with capability `rain` and `hardware_type: "rain_sensor"`
+  (was: dropped). Feeds [matter-weather-sensor](https://github.com/dongnh/matter-weather-sensor)'s
+  rain into light_programmer's rain override.
 - **Logical-bridge occupancy SSE** — `/api/subscribe` now forwards a device's
   own occupancy stream when that device lives on a remote logical bridge,
   instead of the local Matter-fabric feed. Presence sensors hosted on logical

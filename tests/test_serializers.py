@@ -76,6 +76,18 @@ def test_build_sensor_none_without_sensor_clusters():
     assert s.build_sensor({"id": "x", "states": {"on_off": True}}, []) is None
 
 
+def test_build_sensor_includes_rain():
+    # Matter Rain Sensor (0x0044) exposes a dedicated "rain" state; it must be
+    # surfaced rather than dropped (matter-weather-sensor feeds the rain override).
+    dev = {"id": "x", "states": {"rain": 0, "illuminance": 10}}
+    assert s.build_sensor(dev, ["Rain"]) == {
+        "id": "x",
+        "names": ["Rain"],
+        "rain": 0,
+        "illuminance": 10,
+    }
+
+
 # -- build_climate ----------------------------------------------------------
 
 
@@ -149,6 +161,14 @@ def test_build_metadata_light_capabilities():
     assert entry["hardware_type"] == "color_temperature_light"
     assert entry["capabilities"] == ["on_off", "brightness", "color_temperature"]
     assert entry["name"] == "x"  # falls back to id when unnamed
+
+
+def test_build_metadata_rain_sensor():
+    # A dedicated rain state classifies as rain_sensor (not contact/occupancy).
+    dev = {"id": "x", "states": {"rain": 1}}
+    entry = s.build_metadata(dev, ["Office Rain"])
+    assert entry["hardware_type"] == "rain_sensor"
+    assert "rain" in entry["capabilities"]
 
 
 def test_build_metadata_none_for_bare_device():

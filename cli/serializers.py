@@ -112,6 +112,8 @@ def build_metadata(device: dict, names: list) -> dict | None:
         capabilities.append("color_temperature")
     if "occupancy" in states:
         capabilities.append("occupancy")
+    if "rain" in states:
+        capabilities.append("rain")
     if "system_mode" in states:
         capabilities.append("ac")
 
@@ -119,6 +121,10 @@ def build_metadata(device: dict, names: list) -> dict | None:
         hw_type = "thermostat"
     elif "occupancy" in states:
         hw_type = "occupancy_sensor"
+    elif "rain" in states:
+        # Matter Rain Sensor (device type 0x0044): a dedicated BooleanState
+        # sensor, distinct from a contact sensor.
+        hw_type = "rain_sensor"
     elif "color_temp_mireds" in states:
         hw_type = "color_temperature_light"
     elif "brightness_raw" in states:
