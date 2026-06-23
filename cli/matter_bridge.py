@@ -19,6 +19,11 @@ SENSOR_CLUSTERS = {
     69: ("contact", 0, 1),
 }
 
+# Bumped when the device_id derivation changes; gates the one-shot ID migration.
+SCHEMA_VERSION = "stable_md5_v1"
+# Coalesce devices_cache disk writes to at most one per this many seconds.
+FLUSH_INTERVAL = 3.0
+
 
 class MatterBridgeServer:
     """Matter server process manager and device state cache."""
@@ -31,6 +36,10 @@ class MatterBridgeServer:
         self.client = None
         self.process = None
         self.listen_task = None
+
+        # Debounced devices_cache persistence state.
+        self._flush_handle = None
+        self._last_saved_devices: str | None = None
 
         self.cached_devices = []
         self.occupancy_history = {}
@@ -68,6 +77,34 @@ class MatterBridgeServer:
     def _save_names_cache(self):
         self._save_json("names_cache.json", self.device_names)
 
+    # -- Debounced devices_cache persistence ---------------------------------
+
+    def _schedule_flush(self) -> None:
+        """Request a coalesced devices_cache write.
+
+        Called from the per-event hot path: schedules one write at most every
+        FLUSH_INTERVAL seconds instead of writing on every ATTRIBUTE_UPDATED.
+        Falls back to an inline write when there is no running event loop
+        (e.g. a manual refresh on a worker thread, or tests).
+        """
+        if self._flush_handle is not None:
+            return  # a flush is already pending; it will pick up the latest state
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._flush_devices_cache()
+            return
+        self._flush_handle = loop.call_later(FLUSH_INTERVAL, self._flush_devices_cache)
+
+    def _flush_devices_cache(self) -> None:
+        """Write devices_cache only if the serialized snapshot actually changed."""
+        self._flush_handle = None
+        snapshot = json.dumps(self.cached_devices, sort_keys=True, default=str)
+        if snapshot == self._last_saved_devices:
+            return
+        self._save_json("devices_cache.txt", self.cached_devices)
+        self._last_saved_devices = snapshot
+
     # -- Process lifecycle ---------------------------------------------------
 
     async def start_process(self):
@@ -104,6 +141,11 @@ class MatterBridgeServer:
             logging.error("Matter client did not finish initial sync in time.")
             return
 
+        # Build the initial cache and run the one-shot ID migration BEFORE
+        # subscribing to events, so migration never runs on the hot path.
+        self._update_cache()
+        self._run_id_migration_once(self.cached_devices)
+
         self.client.subscribe_events(self._on_event, EventType.ATTRIBUTE_UPDATED)
 
         if fabric_label:
@@ -113,10 +155,14 @@ class MatterBridgeServer:
             except Exception as e:
                 logging.warning(f"Failed to set fabric label: {e}")
 
-        self._update_cache()
         logging.info("Matter bridge is fully operational.")
 
     async def shutdown(self, app):
+        # Flush any pending debounced devices_cache write before tearing down.
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        self._flush_devices_cache()
         if self.listen_task:
             self.listen_task.cancel()
         if self.session:
@@ -192,6 +238,18 @@ class MatterBridgeServer:
         if removed:
             self._update_cache()
         return removed
+
+    def _run_id_migration_once(self, devices: list[dict]) -> None:
+        """Run the legacy->stable ID migration exactly once.
+
+        Gated by a persisted schema marker so a completed migration is never
+        re-attempted (it used to run on every ATTRIBUTE_UPDATED).
+        """
+        marker = self._load_json("cache_schema.json", {})
+        if marker.get("device_id_format") == SCHEMA_VERSION:
+            return
+        self._migrate_ids(devices)
+        self._save_json("cache_schema.json", {"device_id_format": SCHEMA_VERSION})
 
     def _migrate_ids(self, devices: list[dict]):
         """Migrate cache keys from old dev_{node}_{ep} format to new stable IDs."""
@@ -294,9 +352,8 @@ class MatterBridgeServer:
                     "states": states,
                 })
 
-        self._migrate_ids(devices)
         self.cached_devices = devices
-        self._save_json("devices_cache.txt", devices)
+        self._schedule_flush()
 
         if occupancy_updated:
             self._save_json("occupancy_cache.json", self.occupancy_history)

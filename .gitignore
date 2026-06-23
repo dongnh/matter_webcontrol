@@ -209,10 +209,12 @@ __marimo__/
 
 # Matter Web Controller cache files
 devices_cache.txt
+devices_cache.json
 occupancy_cache.json
 names_cache.json
 callbacks_cache.json
 bridge_cache.json
+cache_schema.json
 *.cache.txt
 *.cache.json
 /.claude
