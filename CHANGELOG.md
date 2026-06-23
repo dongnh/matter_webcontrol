@@ -22,8 +22,20 @@
 - **`--data-dir` / `MATTER_DATA_DIR`** pins one directory for all caches and the
   Matter fabric storage; the absolute storage path is logged at startup.
 - **`--log-level` / `MATTER_LOG_LEVEL`** on both `matter-srv` and `matter-mcp`.
+- **Logical-bridge occupancy SSE** — `/api/subscribe` now forwards a device's
+  own occupancy stream when that device lives on a remote logical bridge,
+  instead of the local Matter-fabric feed. Presence sensors hosted on logical
+  bridges (e.g. [matter-mac-presence](https://github.com/dongnh/matter-mac-presence),
+  [matter-appletv-presence](https://github.com/dongnh/matter-appletv-presence))
+  reach subscribers again; when the upstream bridge drops, a synthetic
+  `occupancy: 0` is emitted so subscribers fall back to "absent".
 
 ### Fixes
+
+- **Self-heal logical bridges** — a bridge that was offline at startup (e.g. a
+  Casambi bridge whose Bluetooth hadn't connected when the server booted) is
+  retried in the background (~20 min) and registered once it appears, instead of
+  being silently skipped by `load_cache()` until the next restart.
 
 - **`set_ac` heat mode** — the setpoint is now written to the heating setpoint
   (attr 18) in Heat/EmergencyHeat and the cooling setpoint (attr 17) in

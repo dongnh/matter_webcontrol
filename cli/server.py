@@ -1,8 +1,10 @@
 import argparse
 import asyncio
 import datetime
+import json
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -120,7 +122,49 @@ async def lifespan(app: FastAPI):
         result["failed"],
     )
 
+    # Self-heal logical bridges that were offline at startup (e.g. a Casambi
+    # bridge whose Bluetooth hadn't connected when this server booted).
+    # load_cache() silently skips a cached bridge whose /api/devices refused
+    # the connection, so retry the cached-but-missing/empty ones in the
+    # background until they register, then stop.
+    async def _heal_logical_bridges():
+        for _ in range(40):  # ~20 min: covers slow Bluetooth/cloud bridge startup
+            await asyncio.sleep(30)
+            try:
+                with open(logical.cache_file, "r", encoding="utf-8") as f:
+                    desired = json.load(f)
+            except Exception:
+                continue
+            # A bridge needs healing if it is unregistered, OR registered but
+            # holding zero devices (listening before its backend finished
+            # connecting). registry/cache are both keyed by "ip:port".
+            missing = [
+                cfg
+                for nid, cfg in desired.items()
+                if not getattr(logical.registry.get(nid), "devices", None)
+            ]
+            if not missing:
+                return
+            for cfg in missing:
+                try:
+                    await asyncio.to_thread(
+                        logical.add_bridge,
+                        cfg["ip"],
+                        int(cfg["port"]),
+                        api_key=cfg.get("api_key"),
+                        persist=False,
+                    )
+                    logging.info(
+                        "Self-healed logical bridge %s:%s", cfg["ip"], cfg["port"]
+                    )
+                except Exception:
+                    pass  # still offline; retry next round
+
+    heal_task = asyncio.create_task(_heal_logical_bridges())
+
     yield
+
+    heal_task.cancel()
 
     await bridge.shutdown(app)
 
@@ -284,9 +328,78 @@ async def mired_api(request: Request, payload: Optional[MiredPayload] = None):
     )
 
 
+async def _subscribe_logical(request: Request, resolved: str, client):
+    """Proxy a remote logical bridge's occupancy SSE stream to this client.
+
+    LogicalBridgeClient uses a blocking urllib stream, so a background thread
+    reads its lines and hands them to the async generator via a queue. Lines
+    are forwarded verbatim to preserve SSE framing.
+    """
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    stop = threading.Event()
+    _DONE = object()
+
+    def reader():
+        stream = None
+        try:
+            stream = client.open_stream("/api/subscribe", {"id": resolved})
+            for raw in stream:
+                if stop.is_set():
+                    break
+                line = raw.decode("utf-8", errors="replace")
+                loop.call_soon_threadsafe(queue.put_nowait, line)
+        except Exception as exc:  # surface upstream loss as a stream end
+            logging.warning("logical subscribe [%s] dropped: %s", resolved, exc)
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+
+    threading.Thread(target=reader, daemon=True).start()
+
+    async def stream_gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if item is _DONE:
+                    # Upstream logical bridge went away (host slept / lost the
+                    # network). A device we can no longer reach is, by
+                    # definition, unoccupied — emit a synthetic 0 so
+                    # subscribers fall back to "absent" instead of holding the
+                    # last value.
+                    iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    payload = json.dumps(
+                        {"id": resolved, "occupancy": 0, "timestamp": iso}
+                    )
+                    yield f"data: {payload}\n\n"
+                    break
+                yield item
+        finally:
+            stop.set()
+
+    return StreamingResponse(stream_gen(), media_type="text/event-stream")
+
+
 @app.get("/api/subscribe")
 async def subscribe_api(request: Request, id: str):
     resolved = id
+
+    # Logical-first: if this device lives on a remote logical bridge, forward
+    # its own occupancy SSE stream rather than the local Matter-fabric feed.
+    kind, _dev, client = controller._route(resolved)
+    if kind == "logical" and client is not None:
+        return await _subscribe_logical(request, resolved, client)
+
     queue = controller.bridge.subscribe_occupancy(resolved)
 
     async def stream():
