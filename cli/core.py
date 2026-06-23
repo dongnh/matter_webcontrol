@@ -4,33 +4,27 @@ Both the FastAPI server and MCP server import DeviceController from here.
 """
 
 import asyncio
-import datetime
 import logging
 from typing import Optional
 
 import chip.clusters.Objects as Clusters
 
+from cli import conversions as conv
+from cli import serializers
+from cli.constants import (
+    ATTR_COOLING_SETPOINT,
+    ATTR_SYSTEM_MODE,
+    SENSOR_KEYS,
+    THERMO_MODE_COOL,
+    THERMO_MODE_OFF,
+    THERMO_VALID_MODES,
+    THERMOSTAT_CLUSTER,
+    extract_matter_pin,
+)
 from cli.logic_bridge import LogicalBridgeManager
 from cli.matter_bridge import MatterBridgeServer
 
-# Thermostat SystemMode values used for AC control.
-# 0=Off, 1=Auto, 3=Cool, 4=Heat, 5=EmergencyHeat, 6=Precooling, 7=FanOnly, 8=Dry, 9=Sleep
-THERMO_MODE_OFF = 0
-THERMO_MODE_COOL = 3
-THERMO_MODE_HEAT = 4
-THERMO_MODE_AUTO = 1
-THERMO_VALID_MODES = {0, 1, 3, 4, 5, 6, 7, 8, 9}
-
-SENSOR_KEYS = ["illuminance", "temperature", "pressure", "humidity", "occupancy", "contact"]
-MIRED_MIN, MIRED_MAX = 153, 500  # Matter ColorControl spec range
-
-
-def extract_matter_pin(setup_code: str) -> int:
-    """Convert a Matter manual pairing code to a PIN."""
-    clean = setup_code.replace("-", "").replace(" ", "")
-    if len(clean) not in (11, 21) or not clean.isdigit():
-        raise ValueError("Invalid manual pairing code format")
-    return (int(clean[6:10]) << 14) | (int(clean[1:6]) & 0x3FFF)
+__all__ = ["DeviceController", "extract_matter_pin"]
 
 
 class DeviceController:
@@ -43,6 +37,8 @@ class DeviceController:
     # -- Private helpers -----------------------------------------------------
 
     def _resolve(self, device_id: str) -> str:
+        # Identity by design: device IDs are canonical; aliases are display-only
+        # and are never resolved as IDs.
         return device_id
 
     def _find_physical(self, resolved_id: str) -> dict | None:
@@ -82,8 +78,13 @@ class DeviceController:
         if not self.bridge or not self.bridge.is_ready():
             raise RuntimeError("Server not ready for hardware control")
 
-    def _names_for(self, device_id: str) -> list:
-        return self.bridge.device_names.get(device_id, [])
+    def _resolved_names(self, dev: dict) -> list:
+        """Merge locally-assigned aliases with any names on a remote device."""
+        local = self.bridge.device_names.get(dev["id"], []) if self.bridge else []
+        return serializers.resolved_names(dev, local)
+
+    def _occupancy_ts(self, device_id: str):
+        return self.bridge.occupancy_history.get(device_id) if self.bridge else None
 
     def _all_devices_raw(self) -> list[dict]:
         result = []
@@ -91,38 +92,6 @@ class DeviceController:
             result.extend(self.bridge.cached_devices)
         result.extend(self.logical.get_all_devices().get("devices", []))
         return result
-
-    @staticmethod
-    def _build_light(device: dict, names: list) -> dict | None:
-        states = device.get("states", {})
-        if "on_off" not in states and "brightness_raw" not in states:
-            return None
-
-        on = states.get("on_off")
-        brightness = None
-        if states.get("brightness_raw") is not None:
-            brightness = round(max(0.0, min(1.0, states["brightness_raw"] / 254.0)), 2)
-            if not on:
-                brightness = 0.0
-
-        entry = {"id": device["id"], "names": names, "state": on, "brightness": brightness}
-        mireds = states.get("color_temp_mireds")
-        if mireds and mireds > 0:
-            entry["temperature"] = int(1_000_000 / mireds)
-        return entry
-
-    def _build_sensor(self, device: dict, names: list) -> dict | None:
-        states = device.get("states", {})
-        data = {k: states[k] for k in SENSOR_KEYS if k in states}
-        if not data:
-            return None
-
-        if "occupancy" in data:
-            ts = self.bridge.occupancy_history.get(device["id"]) if self.bridge else None
-            if ts:
-                data["occupancy_last_active"] = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-
-        return {"id": device["id"], "names": names, **data}
 
     # -- Queries -------------------------------------------------------------
 
@@ -134,20 +103,23 @@ class DeviceController:
                 copy["states"] = dict(dev.get("states", {}))
                 if copy["states"].get("color_temp_mireds") == 0:
                     copy["states"].pop("color_temp_mireds", None)
-                copy["names"] = self._names_for(dev["id"])
+                copy["names"] = self._resolved_names(dev)
                 result.append(copy)
-        result.extend(self.logical.get_all_devices().get("devices", []))
+        for dev in self.logical.get_all_devices().get("devices", []):
+            copy = dict(dev)
+            copy["names"] = self._resolved_names(dev)
+            result.append(copy)
         return result
 
     def get_lights(self) -> list[dict]:
         lights = []
         if self.bridge:
             for dev in self.bridge.cached_devices:
-                entry = self._build_light(dev, self._names_for(dev["id"]))
+                entry = serializers.build_light(dev, self._resolved_names(dev))
                 if entry:
                     lights.append(entry)
         for dev in self.logical.get_all_devices().get("devices", []):
-            entry = self._build_light(dev, dev.get("names", []))
+            entry = serializers.build_light(dev, self._resolved_names(dev))
             if entry:
                 lights.append(entry)
         return lights
@@ -157,48 +129,22 @@ class DeviceController:
             return []
         sensors = []
         for dev in self.bridge.cached_devices:
-            entry = self._build_sensor(dev, self._names_for(dev["id"]))
+            entry = serializers.build_sensor(
+                dev, self._resolved_names(dev), self._occupancy_ts(dev["id"])
+            )
             if entry:
                 sensors.append(entry)
         return sensors
-
-    @staticmethod
-    def _climate_entry(dev: dict, names: list) -> dict | None:
-        states = dev.get("states", {})
-        temp_c = None
-        humidity = None
-        kind = None
-
-        if "local_temperature" in states:
-            temp_c = round(states["local_temperature"] / 100.0, 2)
-            kind = "thermostat"
-        elif "temperature" in states:
-            temp_c = round(states["temperature"] / 100.0, 2)
-            kind = "sensor"
-
-        if "humidity" in states:
-            humidity = round(states["humidity"] / 100.0, 2)
-            kind = kind or "sensor"
-
-        if temp_c is None and humidity is None:
-            return None
-
-        out = {"id": dev["id"], "names": names, "kind": kind}
-        if temp_c is not None:
-            out["temperature"] = temp_c
-        if humidity is not None:
-            out["humidity"] = humidity
-        return out
 
     def get_climate(self) -> list[dict]:
         out = []
         if self.bridge:
             for dev in self.bridge.cached_devices:
-                entry = self._climate_entry(dev, self._names_for(dev["id"]))
+                entry = serializers.build_climate(dev, self._resolved_names(dev))
                 if entry:
                     out.append(entry)
         for dev in self.logical.get_all_devices().get("devices", []):
-            entry = self._climate_entry(dev, dev.get("names", []))
+            entry = serializers.build_climate(dev, self._resolved_names(dev))
             if entry:
                 out.append(entry)
         return out
@@ -208,8 +154,7 @@ class DeviceController:
         for dev in self._all_devices_raw():
             if dev.get("id") != resolved:
                 continue
-            names = self._names_for(resolved) or dev.get("names", [])
-            entry = self._climate_entry(dev, names)
+            entry = serializers.build_climate(dev, self._resolved_names(dev))
             if entry:
                 return entry
             raise ValueError(f"Device {resolved} has no climate data")
@@ -220,14 +165,18 @@ class DeviceController:
         # Logical-first
         for dev in self.logical.get_all_devices().get("devices", []):
             if dev["id"] == resolved:
-                entry = self._build_sensor(dev, dev.get("names", []))
+                entry = serializers.build_sensor(
+                    dev, self._resolved_names(dev), self._occupancy_ts(resolved)
+                )
                 if entry:
                     return entry
                 raise ValueError("Device exists but contains no sensor clusters")
         for dev in self.bridge.cached_devices:
             if dev["id"] != resolved:
                 continue
-            entry = self._build_sensor(dev, self._names_for(resolved))
+            entry = serializers.build_sensor(
+                dev, self._resolved_names(dev), self._occupancy_ts(resolved)
+            )
             if entry:
                 return entry
             raise ValueError("Device exists but contains no sensor clusters")
@@ -307,10 +256,10 @@ class DeviceController:
                 raise RuntimeError("Logical bridge client offline")
             if brightness is not None:
                 await asyncio.to_thread(
-                    client.set_brightness, target["id"], max(0.0, min(1.0, brightness))
+                    client.set_brightness, target["id"], conv.clamp(brightness, 0.0, 1.0)
                 )
             if temperature is not None and temperature > 0:
-                mireds = max(MIRED_MIN, min(MIRED_MAX, int(1_000_000 / temperature)))
+                mireds = conv.kelvin_to_mireds(temperature)
                 await asyncio.to_thread(client.set_mired, target["id"], mireds)
             return {"status": "success", "id": resolved, "type": "logical"}
 
@@ -319,17 +268,17 @@ class DeviceController:
         node_id, endpoint_id = self._parse_id(resolved)
 
         if brightness is not None:
-            brightness = max(0.0, min(1.0, brightness))
+            brightness = conv.clamp(brightness, 0.0, 1.0)
             if brightness == 0.0:
                 cmd = Clusters.OnOff.Commands.Off()
             else:
                 cmd = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(
-                    level=max(1, int(brightness * 254)), transitionTime=0
+                    level=conv.denormalize_brightness(brightness), transitionTime=0
                 )
             await self.bridge.client.send_device_command(node_id, endpoint_id, cmd)
 
         if temperature is not None and temperature > 0:
-            mireds = max(MIRED_MIN, min(MIRED_MAX, int(1_000_000 / temperature)))
+            mireds = conv.kelvin_to_mireds(temperature)
             cmd = Clusters.ColorControl.Commands.MoveToColorTemperature(
                 colorTemperatureMireds=mireds,
                 transitionTime=0, optionsMask=0, optionsOverride=0,
@@ -354,7 +303,7 @@ class DeviceController:
 
     async def set_level(self, device_id: str, level: int) -> dict:
         resolved = self._resolve(device_id)
-        level = max(0, min(254, level))
+        level = int(conv.clamp(level, 0, 254))
 
         target, client = self._find_logical(resolved)
         if target:
@@ -375,7 +324,7 @@ class DeviceController:
 
     async def set_mired(self, device_id: str, mireds: int) -> dict:
         resolved = self._resolve(device_id)
-        mireds = max(MIRED_MIN, min(MIRED_MAX, int(mireds)))
+        mireds = conv.clamp_mireds(mireds)
 
         target, client = self._find_logical(resolved)
         if target:
@@ -438,49 +387,28 @@ class DeviceController:
 
     # -- Air conditioners (Thermostat-cluster devices) -----------------------
 
-    @staticmethod
-    def _ac_entry(dev: dict, names: list) -> dict:
-        s = dev.get("states", {})
-        out = {
-            "id": dev["id"],
-            "names": names,
-            "system_mode": s.get("system_mode"),
-            "on": bool(s.get("system_mode")),  # 0=Off → False; any non-zero → True
-        }
-        if "local_temperature" in s:
-            out["local_temperature"] = round(s["local_temperature"] / 100.0, 2)
-        if "cooling_setpoint" in s:
-            out["cooling_setpoint"] = round(s["cooling_setpoint"] / 100.0, 2)
-        if "heating_setpoint" in s:
-            out["heating_setpoint"] = round(s["heating_setpoint"] / 100.0, 2)
-        if "fan_speed" in s:
-            out["fan_speed"] = int(s["fan_speed"])
-        return out
-
     def get_acs(self) -> list[dict]:
         out = []
         if self.bridge:
             out.extend(
-                self._ac_entry(dev, self._names_for(dev["id"]))
+                serializers.build_ac(dev, self._resolved_names(dev))
                 for dev in self.bridge.cached_devices
                 if self._is_ac(dev.get("states", {}))
             )
         for dev in self.logical.get_all_devices().get("devices", []):
             if self._is_ac(dev.get("states", {})):
-                names = self._names_for(dev["id"]) or dev.get("names", [])
-                out.append(self._ac_entry(dev, names))
+                out.append(serializers.build_ac(dev, self._resolved_names(dev)))
         return out
 
     def get_ac(self, device_id: str) -> dict:
         resolved = self._resolve(device_id)
         log_dev, _ = self._find_logical(resolved)
         if log_dev and self._is_ac(log_dev.get("states", {})):
-            names = self._names_for(resolved) or log_dev.get("names", [])
-            return self._ac_entry(log_dev, names)
+            return serializers.build_ac(log_dev, self._resolved_names(log_dev))
         phys = self._find_physical(resolved)
         if not phys or not self._is_ac(phys.get("states", {})):
             raise KeyError(f"Device {resolved} is not an AC")
-        return self._ac_entry(phys, self._names_for(resolved))
+        return serializers.build_ac(phys, self._resolved_names(phys))
 
     async def set_ac(self, device_id: str,
                      on: Optional[bool] = None,
@@ -512,7 +440,7 @@ class DeviceController:
             wrote = {}
             if mode is not None: wrote["system_mode"] = int(mode)
             elif on is False: wrote["system_mode"] = THERMO_MODE_OFF
-            if setpoint is not None: wrote["heating_setpoint"] = int(round(setpoint * 100))
+            if setpoint is not None: wrote["heating_setpoint"] = conv.unit_to_centi(setpoint)
             if fan_speed is not None: wrote["fan_speed"] = int(fan_speed)
             return {"status": "success", "id": resolved, "wrote": wrote, "via": "logical"}
 
@@ -538,16 +466,16 @@ class DeviceController:
         if target_mode is not None:
             await self.bridge.client.write_attribute(
                 node_id=node_id,
-                attribute_path=f"{ep_id}/513/28",
+                attribute_path=f"{ep_id}/{THERMOSTAT_CLUSTER}/{ATTR_SYSTEM_MODE}",
                 value=target_mode,
             )
             wrote.append(("system_mode", target_mode))
 
         if setpoint is not None:
-            sp_centi = int(round(float(setpoint) * 100))
+            sp_centi = conv.unit_to_centi(setpoint)
             await self.bridge.client.write_attribute(
                 node_id=node_id,
-                attribute_path=f"{ep_id}/513/17",
+                attribute_path=f"{ep_id}/{THERMOSTAT_CLUSTER}/{ATTR_COOLING_SETPOINT}",
                 value=sp_centi,
             )
             wrote.append(("cooling_setpoint", sp_centi))
@@ -651,50 +579,11 @@ class DeviceController:
         """
         metadata = []
         for dev in self._all_devices_raw():
-            dev_id = dev.get("id")
-            if not dev_id:
+            if not dev.get("id"):
                 continue
-
-            names = list(dev.get("names", []))
-            if self.bridge:
-                for n in self.bridge.device_names.get(dev_id, []):
-                    if n not in names:
-                        names.append(n)
-
-            states = dev.get("states", {})
-            capabilities = []
-            if "on_off" in states:
-                capabilities.append("on_off")
-            if "brightness_raw" in states:
-                capabilities.append("brightness")
-            if "color_temp_mireds" in states:
-                capabilities.append("color_temperature")
-            if "occupancy" in states:
-                capabilities.append("occupancy")
-            if "system_mode" in states:
-                capabilities.append("ac")
-
-            if "system_mode" in states:
-                hw_type = "thermostat"
-            elif "occupancy" in states:
-                hw_type = "occupancy_sensor"
-            elif "color_temp_mireds" in states:
-                hw_type = "color_temperature_light"
-            elif "brightness_raw" in states:
-                hw_type = "dimmable_light"
-            elif "on_off" in states:
-                hw_type = "on_off_light"
-            else:
-                continue
-
-            metadata.append({
-                "id": dev_id,
-                "name": names[0] if names else dev_id,
-                "names": names,
-                "hardware_type": hw_type,
-                "capabilities": capabilities,
-                "states": states,
-            })
+            entry = serializers.build_metadata(dev, self._resolved_names(dev))
+            if entry:
+                metadata.append(entry)
 
         return {
             "bridge": {

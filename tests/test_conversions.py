@@ -1,13 +1,10 @@
-"""Golden-value tests for the pure conversion logic, locked at current behavior.
-
-In Step 0 these exercise the logic through ``extract_matter_pin`` and the
-``DeviceController`` static builders; Step 4 extracts the math into
-``cli/conversions.py`` and these golden values must still hold.
-"""
+"""Golden-value tests for cli.conversions + extract_matter_pin (now in
+cli.constants, re-exported from cli.core)."""
 
 import pytest
 
-from cli.core import DeviceController, extract_matter_pin
+from cli import conversions as conv
+from cli.core import extract_matter_pin
 
 
 # -- extract_matter_pin -----------------------------------------------------
@@ -27,62 +24,61 @@ def test_extract_pin_rejects_bad(bad):
         extract_matter_pin(bad)
 
 
-# -- brightness normalization (off forces 0.0 today) ------------------------
+# -- brightness -------------------------------------------------------------
 
-def test_build_light_brightness_normalized():
-    dev = {"id": "x", "states": {"on_off": True, "brightness_raw": 200}}
-    entry = DeviceController._build_light(dev, [])
-    assert entry["brightness"] == 0.79  # round(200/254, 2)
-    assert entry["state"] is True
-
-
-def test_build_light_off_forces_zero():
-    dev = {
-        "id": "x",
-        "states": {"on_off": False, "brightness_raw": 0, "color_temp_mireds": 320},
-    }
-    entry = DeviceController._build_light(dev, [])
-    assert entry["brightness"] == 0.0
-    assert entry["state"] is False
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(0, 0.0), (200, 0.79), (254, 1.0), (300, 1.0), (1, 0.0), (127, 0.5)],
+)
+def test_normalize_brightness(raw, expected):
+    assert conv.normalize_brightness(raw) == expected
 
 
-def test_build_light_mired_to_kelvin():
-    dev = {"id": "x", "states": {"on_off": True, "color_temp_mireds": 320}}
-    entry = DeviceController._build_light(dev, [])
-    assert entry["temperature"] == 3125  # int(1_000_000 / 320)
+def test_normalize_brightness_none():
+    assert conv.normalize_brightness(None) is None
 
 
-def test_build_light_none_when_no_light_clusters():
-    assert DeviceController._build_light({"id": "x", "states": {"occupancy": 1}}, []) is None
+@pytest.mark.parametrize(
+    "value,expected", [(0.0, 1), (1.0, 254), (0.5, 127), (2.0, 254), (-1.0, 1)]
+)
+def test_denormalize_brightness(value, expected):
+    assert conv.denormalize_brightness(value) == expected
 
 
-# -- centi-degree scaling ---------------------------------------------------
+# -- color temperature ------------------------------------------------------
 
-def test_climate_entry_centi_scaling():
-    dev = {"id": "x", "states": {"local_temperature": 2500, "humidity": 5512}}
-    entry = DeviceController._climate_entry(dev, [])
-    assert entry["temperature"] == 25.0
-    assert entry["humidity"] == 55.12
-    assert entry["kind"] == "thermostat"
-
-
-def test_ac_entry_centi_and_on_flag():
-    dev = {
-        "id": "x",
-        "states": {
-            "system_mode": 3,
-            "local_temperature": 2500,
-            "cooling_setpoint": 2600,
-            "heating_setpoint": 2000,
-        },
-    }
-    entry = DeviceController._ac_entry(dev, [])
-    assert entry["on"] is True
-    assert entry["local_temperature"] == 25.0
-    assert entry["cooling_setpoint"] == 26.0
-    assert entry["heating_setpoint"] == 20.0
+@pytest.mark.parametrize(
+    "mireds,kelvin", [(320, 3125), (250, 4000), (153, 6535), (500, 2000)]
+)
+def test_mireds_to_kelvin(mireds, kelvin):
+    assert conv.mireds_to_kelvin(mireds) == kelvin
 
 
-def test_ac_entry_off_when_mode_zero():
-    entry = DeviceController._ac_entry({"id": "x", "states": {"system_mode": 0}}, [])
-    assert entry["on"] is False
+@pytest.mark.parametrize("bad", [0, None, -5])
+def test_mireds_to_kelvin_unset(bad):
+    assert conv.mireds_to_kelvin(bad) is None
+
+
+@pytest.mark.parametrize(
+    "kelvin,mireds",
+    [(2700, 370), (1000, 500), (10000, 153), (6500, 153), (2000, 500)],
+)
+def test_kelvin_to_mireds_clamped(kelvin, mireds):
+    assert conv.kelvin_to_mireds(kelvin) == mireds
+
+
+@pytest.mark.parametrize("raw,clamped", [(100, 153), (999, 500), (300, 300)])
+def test_clamp_mireds(raw, clamped):
+    assert conv.clamp_mireds(raw) == clamped
+
+
+# -- centi scaling ----------------------------------------------------------
+
+@pytest.mark.parametrize("centi,unit", [(2500, 25.0), (2612, 26.12), (0, 0.0)])
+def test_centi_to_unit(centi, unit):
+    assert conv.centi_to_unit(centi) == unit
+
+
+@pytest.mark.parametrize("unit,centi", [(26.0, 2600), (25.5, 2550), (0.5, 50)])
+def test_unit_to_centi(unit, centi):
+    assert conv.unit_to_centi(unit) == centi
