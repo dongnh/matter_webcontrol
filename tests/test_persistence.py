@@ -2,9 +2,12 @@
 migration runs once behind a marker, and writes are atomic (Step 3)."""
 
 import json
+import os
 
 import pytest
 
+from cli.core import DeviceController
+from cli.logic_bridge import LogicalBridgeManager
 from cli.matter_bridge import MatterBridgeServer
 
 
@@ -61,3 +64,54 @@ def test_id_migration_runs_once(bridge):
     bridge._run_id_migration_once(devices)
     assert bridge.device_names.get("dev_1_1") == ["Should NOT migrate again"]
     assert bridge.device_names.get("dev_abc12345") == ["Old Name"]
+
+
+# -- Step 3: atomic + loud persistence --------------------------------------
+
+def test_save_json_atomic_no_tmp_left(bridge, tmp_path):
+    p = str(tmp_path / "x.json")
+    bridge._save_json(p, {"v": 1})
+    bridge._save_json(p, {"v": 2})
+    with open(p, encoding="utf-8") as f:
+        assert json.load(f) == {"v": 2}
+    assert not os.path.exists(p + ".tmp")
+
+
+def test_save_json_reraises_oserror(bridge, tmp_path):
+    bad = str(tmp_path / "missing_dir" / "x.json")  # parent does not exist
+    with pytest.raises(OSError):
+        bridge._save_json(bad, {"v": 1})
+
+
+def test_failed_write_leaves_original_intact(bridge, tmp_path, monkeypatch):
+    p = str(tmp_path / "x.json")
+    bridge._save_json(p, {"v": 1})
+
+    import cli.matter_bridge as mb
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mb.json, "dump", boom)
+    with pytest.raises(OSError):
+        bridge._save_json(p, {"v": 2})
+
+    with open(p, encoding="utf-8") as f:
+        assert json.load(f) == {"v": 1}  # crash mid-write left the old file intact
+    assert not os.path.exists(p + ".tmp")  # partial tmp cleaned up
+
+
+def test_set_name_fails_loud_on_write_error(bridge, monkeypatch, tmp_path):
+    ctrl = DeviceController(
+        bridge, LogicalBridgeManager(cache_file=str(tmp_path / "bridge.json"))
+    )
+    bridge.cached_devices = [
+        {"id": "dev_x", "node_id": 1, "endpoint_id": 1, "states": {"on_off": True}}
+    ]
+
+    def boom(*a, **k):
+        raise OSError("read-only fs")
+
+    monkeypatch.setattr(bridge, "_save_json", boom)
+    with pytest.raises(OSError):
+        ctrl.set_name("dev_x", "Lamp")  # must NOT silently report success

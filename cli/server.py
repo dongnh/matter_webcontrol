@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from cli import paths
 from cli.core import DeviceController
 from cli.logic_bridge import LogicalBridgeManager
 from cli.matter_bridge import MatterBridgeServer
@@ -334,7 +335,14 @@ def main():
     parser.add_argument("--fabric", type=str, default=None, help="Matter fabric label")
     parser.add_argument("--api-key", type=str, default=os.environ.get("MATTER_SRV_KEY"),
                         help="Require X-API-Key header (or set MATTER_SRV_KEY env var)")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Directory for caches + Matter fabric storage "
+                             "(or set MATTER_DATA_DIR; defaults to the current directory)")
     args = parser.parse_args()
+
+    data_dir = paths.set_data_dir(args.data_dir)
+    logging.info("Data directory: %s", data_dir)
+    logging.info("Matter fabric storage: %s", paths.matter_storage())
 
     if args.host != "127.0.0.1" and not args.api_key:
         logging.warning(

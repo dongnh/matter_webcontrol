@@ -10,6 +10,8 @@ from aiohttp import ClientSession
 from matter_server.client.client import MatterClient
 from matter_server.common.models import EventType
 
+from cli import paths
+
 SENSOR_CLUSTERS = {
     1024: ("illuminance", 0, 1),
     1026: ("temperature", 0, 100),
@@ -47,9 +49,9 @@ class MatterBridgeServer:
         self.occupancy_subscribers = {}
 
         # Load persisted caches
-        self.cached_devices = self._load_json("devices_cache.txt", [])
-        self.occupancy_history = self._load_json("occupancy_cache.json", {})
-        self.device_names = self._load_json("names_cache.json", {})
+        self.cached_devices = self._load_json(paths.devices_cache(), [])
+        self.occupancy_history = self._load_json(paths.occupancy_cache(), {})
+        self.device_names = self._load_json(paths.names_cache(), {})
 
     # -- JSON cache helpers --------------------------------------------------
 
@@ -68,14 +70,24 @@ class MatterBridgeServer:
 
     @staticmethod
     def _save_json(path: str, data):
+        """Atomically write JSON (tmp + os.replace). Re-raises OSError after
+        logging so callers can no longer report success on a failed write."""
+        tmp = path + ".tmp"
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
-        except Exception as e:
-            logging.error(f"Failed to save {path}: {e}")
+            os.replace(tmp, path)
+        except OSError as e:
+            logging.error("Failed to save %s: %s", path, e)
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def _save_names_cache(self):
-        self._save_json("names_cache.json", self.device_names)
+        self._save_json(paths.names_cache(), self.device_names)
 
     # -- Debounced devices_cache persistence ---------------------------------
 
@@ -97,20 +109,29 @@ class MatterBridgeServer:
         self._flush_handle = loop.call_later(FLUSH_INTERVAL, self._flush_devices_cache)
 
     def _flush_devices_cache(self) -> None:
-        """Write devices_cache only if the serialized snapshot actually changed."""
+        """Write devices_cache only if the serialized snapshot actually changed.
+
+        Best-effort: devices_cache is rebuilt from Matter on restart, so a write
+        failure (already logged by _save_json) is swallowed rather than crashing
+        the fire-and-forget callback."""
         self._flush_handle = None
         snapshot = json.dumps(self.cached_devices, sort_keys=True, default=str)
         if snapshot == self._last_saved_devices:
             return
-        self._save_json("devices_cache.txt", self.cached_devices)
-        self._last_saved_devices = snapshot
+        try:
+            self._save_json(paths.devices_cache(), self.cached_devices)
+            self._last_saved_devices = snapshot
+        except OSError:
+            pass  # logged in _save_json; cache repopulates from Matter on restart
 
     # -- Process lifecycle ---------------------------------------------------
 
     async def start_process(self):
+        storage_path = paths.matter_storage()
+        logging.info("Matter fabric storage path: %s", storage_path)
         self.process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "matter_server.server",
-            "--storage-path", "./matter_storage",
+            "--storage-path", storage_path,
             "--port", str(self.matter_port),
         )
         await asyncio.sleep(2.0)
@@ -245,11 +266,11 @@ class MatterBridgeServer:
         Gated by a persisted schema marker so a completed migration is never
         re-attempted (it used to run on every ATTRIBUTE_UPDATED).
         """
-        marker = self._load_json("cache_schema.json", {})
+        marker = self._load_json(paths.schema_marker(), {})
         if marker.get("device_id_format") == SCHEMA_VERSION:
             return
         self._migrate_ids(devices)
-        self._save_json("cache_schema.json", {"device_id_format": SCHEMA_VERSION})
+        self._save_json(paths.schema_marker(), {"device_id_format": SCHEMA_VERSION})
 
     def _migrate_ids(self, devices: list[dict]):
         """Migrate cache keys from old dev_{node}_{ep} format to new stable IDs."""
@@ -276,7 +297,7 @@ class MatterBridgeServer:
         for old_id, new_id in mapping.items():
             if old_id in self.occupancy_history:
                 self.occupancy_history[new_id] = self.occupancy_history.pop(old_id)
-        self._save_json("occupancy_cache.json", self.occupancy_history)
+        self._save_json(paths.occupancy_cache(), self.occupancy_history)
 
         # Migrate occupancy_subscribers (in-memory)
         for old_id, new_id in mapping.items():
@@ -356,4 +377,7 @@ class MatterBridgeServer:
         self._schedule_flush()
 
         if occupancy_updated:
-            self._save_json("occupancy_cache.json", self.occupancy_history)
+            try:
+                self._save_json(paths.occupancy_cache(), self.occupancy_history)
+            except OSError:
+                pass  # logged in _save_json; not on the critical read path

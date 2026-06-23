@@ -13,6 +13,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
+from cli import paths
+
 
 class LogicalBridgeClient:
     """REST client for a remote Matter Web Controller."""
@@ -99,9 +101,9 @@ class LogicalBridgeClient:
 class LogicalBridgeManager:
     """Registry of remote logical bridges with persistent cache."""
 
-    def __init__(self, cache_file: str = "bridge_cache.json"):
+    def __init__(self, cache_file: Optional[str] = None):
         self.registry: Dict[str, LogicalBridgeClient] = {}
-        self.cache_file = cache_file
+        self.cache_file = cache_file or paths.bridge_cache()
 
     def load_cache(self) -> None:
         if not os.path.exists(self.cache_file):
