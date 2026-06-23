@@ -2,8 +2,8 @@
 
 from cli import serializers as s
 
-
 # -- resolved_names ---------------------------------------------------------
+
 
 def test_resolved_names_local_first_then_remote():
     dev = {"id": "d", "names": ["Remote A", "Shared"]}
@@ -22,10 +22,14 @@ def test_resolved_names_physical_only_local():
 
 # -- build_light (C5: off keeps the stored brightness) ----------------------
 
+
 def test_build_light_on():
     dev = {"id": "x", "states": {"on_off": True, "brightness_raw": 200}}
     assert s.build_light(dev, []) == {
-        "id": "x", "names": [], "state": True, "brightness": 0.79,
+        "id": "x",
+        "names": [],
+        "state": True,
+        "brightness": 0.79,
     }
 
 
@@ -53,6 +57,7 @@ def test_build_light_none_without_clusters():
 
 # -- build_sensor -----------------------------------------------------------
 
+
 def test_build_sensor_filters_keys():
     dev = {"id": "x", "states": {"occupancy": 1, "on_off": True, "illuminance": 42}}
     entry = s.build_sensor(dev, ["Sensor"])
@@ -72,6 +77,7 @@ def test_build_sensor_none_without_sensor_clusters():
 
 
 # -- build_climate ----------------------------------------------------------
+
 
 def test_build_climate_thermostat():
     dev = {"id": "x", "states": {"local_temperature": 2500, "humidity": 5500}}
@@ -94,19 +100,28 @@ def test_build_climate_none():
 
 # -- build_ac ---------------------------------------------------------------
 
+
 def test_build_ac_full():
     dev = {
         "id": "x",
         "states": {
-            "system_mode": 3, "local_temperature": 2500,
-            "cooling_setpoint": 2600, "heating_setpoint": 2000, "fan_speed": 50,
+            "system_mode": 3,
+            "local_temperature": 2500,
+            "cooling_setpoint": 2600,
+            "heating_setpoint": 2000,
+            "fan_speed": 50,
         },
     }
     entry = s.build_ac(dev, ["AC"])
     assert entry == {
-        "id": "x", "names": ["AC"], "system_mode": 3, "on": True,
-        "local_temperature": 25.0, "cooling_setpoint": 26.0,
-        "heating_setpoint": 20.0, "fan_speed": 50,
+        "id": "x",
+        "names": ["AC"],
+        "system_mode": 3,
+        "on": True,
+        "local_temperature": 25.0,
+        "cooling_setpoint": 26.0,
+        "heating_setpoint": 20.0,
+        "fan_speed": 50,
     }
 
 
@@ -115,6 +130,7 @@ def test_build_ac_off():
 
 
 # -- build_metadata ---------------------------------------------------------
+
 
 def test_build_metadata_thermostat():
     dev = {"id": "x", "states": {"system_mode": 3, "local_temperature": 2500}}
@@ -125,7 +141,10 @@ def test_build_metadata_thermostat():
 
 
 def test_build_metadata_light_capabilities():
-    dev = {"id": "x", "states": {"on_off": True, "brightness_raw": 100, "color_temp_mireds": 250}}
+    dev = {
+        "id": "x",
+        "states": {"on_off": True, "brightness_raw": 100, "color_temp_mireds": 250},
+    }
     entry = s.build_metadata(dev, [])
     assert entry["hardware_type"] == "color_temperature_light"
     assert entry["capabilities"] == ["on_off", "brightness", "color_temperature"]

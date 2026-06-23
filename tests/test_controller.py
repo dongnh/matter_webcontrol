@@ -9,12 +9,19 @@ from tests.fakes import StubLogicalClient
 def _dup_light(device_id="dev_aaaa0001", node="peer:1"):
     return StubLogicalClient(
         node,
-        [{"id": device_id, "node_id": node, "endpoint_id": 1,
-          "states": {"on_off": True, "brightness_raw": 50}}],
+        [
+            {
+                "id": device_id,
+                "node_id": node,
+                "endpoint_id": 1,
+                "states": {"on_off": True, "brightness_raw": 50},
+            }
+        ],
     )
 
 
 # -- dedup (A5/G2 dedup half) -----------------------------------------------
+
 
 def test_iter_devices_dedup_by_id(controller_with_fixture, logical_manager):
     # dev_aaaa0001 is physical (fixture A) AND re-exported by a peer (loop).
@@ -39,6 +46,7 @@ def test_iter_devices_physical_first_identity(controller_with_fixture, logical_m
 
 
 # -- routing logical-first (A1) ---------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_control_routes_logical_first(controller_with_fixture, logical_manager):
@@ -68,8 +76,14 @@ async def test_set_ac_routes_logical_first(controller_with_fixture, logical_mana
     # to the logical bridge — previously set_device's AC branch was physical-first.
     client = StubLogicalClient(
         "peer:1",
-        [{"id": "dev_ac000001", "node_id": "peer:1", "endpoint_id": 1,
-          "states": {"system_mode": 3}}],
+        [
+            {
+                "id": "dev_ac000001",
+                "node_id": "peer:1",
+                "endpoint_id": 1,
+                "states": {"system_mode": 3},
+            }
+        ],
     )
     ctrl, _bridge = controller_with_fixture("ac", logical=logical_manager(client))
 
@@ -87,12 +101,13 @@ async def test_toggle_unknown_device_raises(controller_with_fixture):
 
 # -- Step 7: set_ac setpoint-by-mode (C2/C3/E3/API2) ------------------------
 
+
 @pytest.mark.asyncio
 async def test_set_ac_heat_mode_writes_heating_setpoint(controller_with_fixture):
     ctrl, bridge = controller_with_fixture("ac")  # physical AC, currently Cool
     result = await ctrl.set_ac("dev_ac000001", mode=4, setpoint=22.0)  # Heat
     paths = [w[1] for w in bridge.client.writes]
-    assert "1/513/18" in paths      # heating_setpoint
+    assert "1/513/18" in paths  # heating_setpoint
     assert "1/513/17" not in paths  # NOT cooling_setpoint
     assert result["wrote"]["setpoint"] == 2200  # neutral key (C3)
 
@@ -132,29 +147,38 @@ async def test_set_ac_partial_write_reported(controller_with_fixture, monkeypatc
     monkeypatch.setattr(bridge.client, "write_attribute", flaky)
     result = await ctrl.set_ac("dev_ac000001", mode=3, setpoint=24.0)
     assert result["status"] == "partial"
-    assert "system_mode" in result["wrote"]   # mode write landed
-    assert "setpoint" in result["failed"]      # setpoint write reported failed
+    assert "system_mode" in result["wrote"]  # mode write landed
+    assert "setpoint" in result["failed"]  # setpoint write reported failed
 
 
 @pytest.mark.asyncio
-async def test_logical_set_ac_neutral_key_and_on(controller_with_fixture, logical_manager):
+async def test_logical_set_ac_neutral_key_and_on(
+    controller_with_fixture, logical_manager
+):
     client = StubLogicalClient(
         "peer:1",
-        [{"id": "dev_lac", "node_id": "peer:1", "endpoint_id": 1,
-          "states": {"system_mode": 3}}],
+        [
+            {
+                "id": "dev_lac",
+                "node_id": "peer:1",
+                "endpoint_id": 1,
+                "states": {"system_mode": 3},
+            }
+        ],
     )
     ctrl, _bridge = controller_with_fixture("empty", logical=logical_manager(client))
 
     r = await ctrl.set_ac("dev_lac", setpoint=26.0)
     assert r["via"] == "logical"
-    assert r["wrote"]["setpoint"] == 2600          # neutral key, not heating_setpoint (C3)
+    assert r["wrote"]["setpoint"] == 2600  # neutral key, not heating_setpoint (C3)
     assert "heating_setpoint" not in r["wrote"]
 
     r2 = await ctrl.set_ac("dev_lac", on=True)
-    assert r2["wrote"]["system_mode"] == 3          # C4: no longer omitted
+    assert r2["wrote"]["system_mode"] == 3  # C4: no longer omitted
 
 
 # -- Step 7: register_device names the right device (C1/A6/E7) ---------------
+
 
 @pytest.mark.asyncio
 async def test_register_device_names_exact_node(controller_with_fixture):
@@ -169,7 +193,9 @@ async def test_register_device_names_exact_node(controller_with_fixture):
 @pytest.mark.asyncio
 async def test_register_device_name_not_applied(controller_with_fixture):
     ctrl, bridge = controller_with_fixture("ac")
-    bridge.command_responses["commission_with_code"] = {"node_id": 999}  # no such device
+    bridge.command_responses["commission_with_code"] = {
+        "node_id": 999
+    }  # no such device
     result = await ctrl.register_device("1234-567-8901", name="Ghost")
     assert result["assigned_id"] is None
     assert result["name_not_applied"] is True

@@ -132,9 +132,7 @@ class DeviceController:
     def get_sensors(self) -> list[dict]:
         sensors = []
         for dev, names, _origin in self._iter_devices():
-            entry = serializers.build_sensor(
-                dev, names, self._occupancy_ts(dev["id"])
-            )
+            entry = serializers.build_sensor(dev, names, self._occupancy_ts(dev["id"]))
             if entry:
                 sensors.append(entry)
         return sensors
@@ -220,9 +218,12 @@ class DeviceController:
 
     # -- Control -------------------------------------------------------------
 
-    async def set_device(self, device_id: str,
-                         brightness: Optional[float] = None,
-                         temperature: Optional[int] = None) -> dict:
+    async def set_device(
+        self,
+        device_id: str,
+        brightness: Optional[float] = None,
+        temperature: Optional[int] = None,
+    ) -> dict:
         resolved = self._resolve(device_id)
         kind, dev, client = self._route(resolved)
 
@@ -266,7 +267,9 @@ class DeviceController:
             mireds = conv.kelvin_to_mireds(temperature)
             cmd = Clusters.ColorControl.Commands.MoveToColorTemperature(
                 colorTemperatureMireds=mireds,
-                transitionTime=0, optionsMask=0, optionsOverride=0,
+                transitionTime=0,
+                optionsMask=0,
+                optionsOverride=0,
             )
             await self.bridge.client.send_device_command(node_id, endpoint_id, cmd)
 
@@ -297,7 +300,12 @@ class DeviceController:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
             await asyncio.to_thread(client.set_level, dev["id"], level)
-            return {"status": "success", "id": resolved, "level": level, "type": "logical"}
+            return {
+                "status": "success",
+                "id": resolved,
+                "level": level,
+                "type": "logical",
+            }
 
         self._verify_hardware()
         node_id, endpoint_id = self._parse_id(resolved)
@@ -305,7 +313,9 @@ class DeviceController:
         if level == 0:
             cmd = Clusters.OnOff.Commands.Off()
         else:
-            cmd = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(level=level, transitionTime=0)
+            cmd = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(
+                level=level, transitionTime=0
+            )
         await self.bridge.client.send_device_command(node_id, endpoint_id, cmd)
         return {"status": "success", "id": resolved, "level": level, "type": "physical"}
 
@@ -318,16 +328,29 @@ class DeviceController:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
             await asyncio.to_thread(client.set_mired, dev["id"], mireds)
-            return {"status": "success", "id": resolved, "mireds": mireds, "type": "logical"}
+            return {
+                "status": "success",
+                "id": resolved,
+                "mireds": mireds,
+                "type": "logical",
+            }
 
         self._verify_hardware()
         node_id, endpoint_id = self._parse_id(resolved)
 
         cmd = Clusters.ColorControl.Commands.MoveToColorTemperature(
-            colorTemperatureMireds=mireds, transitionTime=0, optionsMask=0, optionsOverride=0,
+            colorTemperatureMireds=mireds,
+            transitionTime=0,
+            optionsMask=0,
+            optionsOverride=0,
         )
         await self.bridge.client.send_device_command(node_id, endpoint_id, cmd)
-        return {"status": "success", "id": resolved, "mireds": mireds, "type": "physical"}
+        return {
+            "status": "success",
+            "id": resolved,
+            "mireds": mireds,
+            "type": "physical",
+        }
 
     async def batch_control(self, actions: list[dict]) -> list[dict]:
         async def run(action: dict) -> dict:
@@ -370,11 +393,14 @@ class DeviceController:
             return serializers.build_ac(dev, self._resolved_names(dev))
         raise KeyError(f"Device {resolved} is not an AC")
 
-    async def set_ac(self, device_id: str,
-                     on: Optional[bool] = None,
-                     mode: Optional[int] = None,
-                     setpoint: Optional[float] = None,
-                     fan_speed: Optional[int] = None) -> dict:
+    async def set_ac(
+        self,
+        device_id: str,
+        on: Optional[bool] = None,
+        mode: Optional[int] = None,
+        setpoint: Optional[float] = None,
+        fan_speed: Optional[int] = None,
+    ) -> dict:
         """Control an AC. on/off via SystemMode; setpoint in °C (e.g. 26.0).
 
         - on=True alone selects last-known non-zero mode, defaulting to Cool.
@@ -390,10 +416,16 @@ class DeviceController:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
             if mode is not None and int(mode) not in THERMO_VALID_MODES:
-                raise ValueError(f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}")
+                raise ValueError(
+                    f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}"
+                )
             await asyncio.to_thread(
                 client.set_ac,
-                resolved, on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed,
+                resolved,
+                on=on,
+                mode=mode,
+                setpoint=setpoint,
+                fan_speed=fan_speed,
             )
             try:
                 await asyncio.to_thread(client.refresh)
@@ -413,7 +445,12 @@ class DeviceController:
                 wrote["setpoint"] = conv.unit_to_centi(setpoint)  # neutral key (C3)
             if fan_speed is not None:
                 wrote["fan_speed"] = int(fan_speed)
-            return {"status": "success", "id": resolved, "wrote": wrote, "via": "logical"}
+            return {
+                "status": "success",
+                "id": resolved,
+                "wrote": wrote,
+                "via": "logical",
+            }
 
         # fan_speed is not a Matter Thermostat attribute — refuse rather than
         # silently dropping it on a mutation (API2).
@@ -426,13 +463,15 @@ class DeviceController:
             raise KeyError(f"Device {resolved} is not an AC")
 
         node_id, ep_id = phys["node_id"], phys["endpoint_id"]
-        wrote: dict = {}
+        phys_wrote: dict = {}
         failed: dict = {}
 
         target_mode = None
         if mode is not None:
             if int(mode) not in THERMO_VALID_MODES:
-                raise ValueError(f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}")
+                raise ValueError(
+                    f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}"
+                )
             target_mode = int(mode)
         elif on is True:
             cur = phys["states"].get("system_mode") or 0
@@ -444,7 +483,8 @@ class DeviceController:
         # set this call, else the device's current mode (C2). Writing the cooling
         # setpoint while in Heat used to silently no-op the active heating setpoint.
         effective_mode = (
-            target_mode if target_mode is not None
+            target_mode
+            if target_mode is not None
             else phys["states"].get("system_mode")
         )
 
@@ -455,7 +495,7 @@ class DeviceController:
                     attribute_path=f"{ep_id}/{THERMOSTAT_CLUSTER}/{attr}",
                     value=value,
                 )
-                wrote[label] = value
+                phys_wrote[label] = value
             except Exception as e:  # report which writes landed (E3)
                 failed[label] = str(e)
 
@@ -482,7 +522,7 @@ class DeviceController:
         result = {
             "status": "success" if not failed else "partial",
             "id": resolved,
-            "wrote": wrote,
+            "wrote": phys_wrote,
         }
         if failed:
             result["failed"] = failed
@@ -498,7 +538,9 @@ class DeviceController:
         node_id = self.logical.remove_bridge(ip, port)
         return {"status": "success", "message": f"Removed logical bridge {node_id}"}
 
-    async def register_device(self, code: str, ip: Optional[str] = None, name: Optional[str] = None) -> dict:
+    async def register_device(
+        self, code: str, ip: Optional[str] = None, name: Optional[str] = None
+    ) -> dict:
         self._verify_hardware()
 
         if ip:
@@ -530,7 +572,8 @@ class DeviceController:
             self.bridge.sync()
             new_ids = (
                 self.bridge.device_ids_for_node(new_node_id)
-                if new_node_id is not None else []
+                if new_node_id is not None
+                else []
             )
             for dev_id in new_ids:
                 try:

@@ -56,8 +56,9 @@ def data_path(filename: str) -> str:
 
 # -- Named cache / storage paths --------------------------------------------
 
+
 def devices_cache() -> str:
-    return data_path("devices_cache.txt")
+    return data_path("devices_cache.json")
 
 
 def occupancy_cache() -> str:

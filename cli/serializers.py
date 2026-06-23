@@ -38,7 +38,9 @@ def build_light(device: dict, names: list) -> dict | None:
     return entry
 
 
-def build_sensor(device: dict, names: list, occupancy_ts: int | None = None) -> dict | None:
+def build_sensor(
+    device: dict, names: list, occupancy_ts: int | None = None
+) -> dict | None:
     states = device.get("states", {})
     data = {k: states[k] for k in SENSOR_KEYS if k in states}
     if not data:

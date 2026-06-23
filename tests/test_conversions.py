@@ -6,8 +6,8 @@ import pytest
 from cli import conversions as conv
 from cli.core import extract_matter_pin
 
-
 # -- extract_matter_pin -----------------------------------------------------
+
 
 def test_extract_pin_golden():
     assert extract_matter_pin("2456-515-1552") == 84472403
@@ -25,6 +25,7 @@ def test_extract_pin_rejects_bad(bad):
 
 
 # -- brightness -------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "raw,expected",
@@ -46,6 +47,7 @@ def test_denormalize_brightness(value, expected):
 
 
 # -- color temperature ------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "mireds,kelvin", [(320, 3125), (250, 4000), (153, 6535), (500, 2000)]
@@ -73,6 +75,7 @@ def test_clamp_mireds(raw, clamped):
 
 
 # -- centi scaling ----------------------------------------------------------
+
 
 @pytest.mark.parametrize("centi,unit", [(2500, 25.0), (2612, 26.12), (0, 0.0)])
 def test_centi_to_unit(centi, unit):

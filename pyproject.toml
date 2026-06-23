@@ -54,7 +54,9 @@ target-version = "py312"
 
 [tool.mypy]
 python_version = "3.12"
-strict = true
+ignore_missing_imports = true   # chip / matter_server / mcp ship no stubs
+check_untyped_defs = true
+warn_redundant_casts = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

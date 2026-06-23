@@ -54,14 +54,14 @@ class LogicalBridgeClient:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
-            body = ""
+            err_body = ""
             try:
-                body = e.read().decode("utf-8", "replace")
+                err_body = e.read().decode("utf-8", "replace")
             except Exception:
                 pass
             # Remote 4xx is a client/config error -> ValueError so the local
             # _wrap maps it to 400 (not an opaque 500); 5xx -> RuntimeError/503.
-            msg = f"Remote bridge {self.host}:{self.port} returned {e.code}: {body[:200]}"
+            msg = f"Remote bridge {self.host}:{self.port} returned {e.code}: {err_body[:200]}"
             if 400 <= e.code < 500:
                 raise ValueError(msg)
             raise RuntimeError(msg)
@@ -73,19 +73,22 @@ class LogicalBridgeClient:
 
     def set_level(self, device_id: str, level: int) -> None:
         self._request(
-            "/api/level", method="POST",
+            "/api/level",
+            method="POST",
             body={"id": device_id, "level": int(level)},
         )
 
     def set_mired(self, device_id: str, mireds: int) -> None:
         self._request(
-            "/api/mired", method="POST",
+            "/api/mired",
+            method="POST",
             body={"id": device_id, "mireds": int(mireds)},
         )
 
     def set_brightness(self, device_id: str, brightness: float) -> None:
         self._request(
-            "/api/set", method="POST",
+            "/api/set",
+            method="POST",
             body={"id": device_id, "brightness": float(brightness)},
         )
 
@@ -140,7 +143,7 @@ class LogicalBridgeManager:
             raise generic
 
         try:
-            addr: Optional[ipaddress._BaseAddress] = ipaddress.ip_address(ip)
+            addr = ipaddress.ip_address(ip)  # IPv4Address | IPv6Address
         except ValueError:
             addr = None  # hostname (e.g. mDNS) — allowed
 
@@ -173,8 +176,10 @@ class LogicalBridgeManager:
         for nid, cfg in data.items():
             try:
                 self.add_bridge(
-                    cfg["ip"], int(cfg["port"]),
-                    api_key=cfg.get("api_key"), persist=False,
+                    cfg["ip"],
+                    int(cfg["port"]),
+                    api_key=cfg.get("api_key"),
+                    persist=False,
                 )
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
                 logging.info("Bridge %s unreachable at startup: %s", nid, e)
@@ -255,11 +260,13 @@ class LogicalBridgeManager:
         aggregated = []
         for node_id, client in self.registry.items():
             for dev in client.devices.values():
-                aggregated.append({
-                    "id": dev["id"],
-                    "node_id": node_id,
-                    "endpoint_id": dev.get("endpoint_id"),
-                    "states": dev.get("states", {}),
-                    "names": dev.get("names", []),
-                })
+                aggregated.append(
+                    {
+                        "id": dev["id"],
+                        "node_id": node_id,
+                        "endpoint_id": dev.get("endpoint_id"),
+                        "states": dev.get("states", {}),
+                        "names": dev.get("names", []),
+                    }
+                )
         return {"total_devices": len(aggregated), "devices": aggregated}

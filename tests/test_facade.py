@@ -14,6 +14,7 @@ def bridge(tmp_path, monkeypatch):
 
 # -- alias facade -----------------------------------------------------------
 
+
 def test_add_alias_conflict(bridge):
     bridge.add_alias("dev_a", "Lamp")
     with pytest.raises(ValueError):
@@ -38,6 +39,7 @@ def test_remove_alias_clears_empty_key(bridge):
 
 # -- node lookup ------------------------------------------------------------
 
+
 def test_device_ids_for_node(bridge):
     bridge.cached_devices = [
         {"id": "dev_a", "node_id": 1, "endpoint_id": 1, "states": {}},
@@ -49,8 +51,11 @@ def test_device_ids_for_node(bridge):
 
 # -- occupancy facade + pruning (G3) ----------------------------------------
 
+
 def test_prune_stale_occupancy(bridge):
-    bridge.cached_devices = [{"id": "dev_live", "node_id": 1, "endpoint_id": 1, "states": {}}]
+    bridge.cached_devices = [
+        {"id": "dev_live", "node_id": 1, "endpoint_id": 1, "states": {}}
+    ]
     bridge.occupancy_history = {"dev_live": 1, "dev_gone": 2}
     bridge.occupancy_subscribers = {"dev_live": [], "dev_gone": []}
     bridge.prune_stale_occupancy()
@@ -69,6 +74,7 @@ async def test_subscribe_is_bounded_and_unsubscribe_cleans_key(bridge):
 
 
 # -- controller wiring through the facade -----------------------------------
+
 
 def test_controller_set_remove_name_via_facade(controller_with_fixture):
     ctrl, _bridge = controller_with_fixture("A")

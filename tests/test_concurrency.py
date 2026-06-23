@@ -18,7 +18,9 @@ class _SlowClient:
         self.calls: list[tuple] = []
         self.devices = {
             "dev_log1": {
-                "id": "dev_log1", "node_id": node_id, "endpoint_id": 1,
+                "id": "dev_log1",
+                "node_id": node_id,
+                "endpoint_id": 1,
                 "states": {"on_off": True, "brightness_raw": 100},
             }
         }

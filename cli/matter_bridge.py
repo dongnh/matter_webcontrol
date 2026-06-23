@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import time
+from typing import Any
 
 from aiohttp import ClientSession
 from matter_server.client.client import MatterClient
@@ -36,10 +37,12 @@ class MatterBridgeServer:
         self.matter_port = port + 1
         self.server_url = f"ws://localhost:{self.matter_port}/ws"
 
-        self.session = None
-        self.client = None
-        self.process = None
-        self.listen_task = None
+        self.session: Any = None
+        self.client: Any = None
+        self.process: Any = None
+        self.listen_task: Any = None
+        self._watch_task: Any = None
+        self._shutting_down = False
 
         # Debounced devices_cache persistence state.
         self._flush_handle = None
@@ -132,11 +135,45 @@ class MatterBridgeServer:
         storage_path = paths.matter_storage()
         logging.info("Matter fabric storage path: %s", storage_path)
         self.process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "matter_server.server",
-            "--storage-path", storage_path,
-            "--port", str(self.matter_port),
+            sys.executable,
+            "-m",
+            "matter_server.server",
+            "--storage-path",
+            storage_path,
+            "--port",
+            str(self.matter_port),
         )
-        await asyncio.sleep(2.0)
+        # No fixed sleep — establish_connection() retries the connect 30×.
+
+    async def _cleanup_failed_start(self) -> None:
+        """Tear down a half-initialized bridge so we don't serve a zombie (G5)."""
+        if self.listen_task:
+            self.listen_task.cancel()
+            self.listen_task = None
+        if self.session:
+            try:
+                await self.session.close()
+            except Exception:
+                pass
+            self.session = None
+        if self.process:
+            try:
+                self.process.terminate()
+                await self.process.wait()
+            except Exception:
+                pass
+            self.process = None
+        self.client = None  # is_ready() -> False so /health reports not ready
+
+    async def _watch_process(self) -> None:
+        """Log + mark not-ready if the Matter subprocess dies unexpectedly (G7)."""
+        proc = self.process
+        if proc is None:
+            return
+        rc = await proc.wait()
+        if not self._shutting_down:
+            logging.error("Matter server subprocess exited unexpectedly (code %s).", rc)
+            self.client = None
 
     async def establish_connection(self) -> bool:
         self.session = ClientSession()
@@ -153,7 +190,8 @@ class MatterBridgeServer:
     async def initialize(self, app, fabric_label: str | None = None):
         await self.start_process()
         if not await self.establish_connection():
-            logging.error("Failed to connect to Matter server.")
+            logging.error("Failed to connect to Matter server; cleaning up.")
+            await self._cleanup_failed_start()
             return
 
         init_ready = asyncio.Event()
@@ -161,7 +199,10 @@ class MatterBridgeServer:
         try:
             await asyncio.wait_for(init_ready.wait(), timeout=60)
         except asyncio.TimeoutError:
-            logging.error("Matter client did not finish initial sync in time.")
+            logging.error(
+                "Matter client did not finish initial sync in time; cleaning up."
+            )
+            await self._cleanup_failed_start()
             return
 
         # Build the initial cache and run the one-shot ID migration BEFORE
@@ -173,14 +214,21 @@ class MatterBridgeServer:
 
         if fabric_label:
             try:
-                await self.client.send_command("set_default_fabric_label", label=fabric_label)
+                await self.client.send_command(
+                    "set_default_fabric_label", label=fabric_label
+                )
                 logging.info(f"Fabric label set to: {fabric_label}")
             except Exception as e:
                 logging.warning(f"Failed to set fabric label: {e}")
 
+        self._watch_task = asyncio.create_task(self._watch_process())
         logging.info("Matter bridge is fully operational.")
 
     async def shutdown(self, app):
+        self._shutting_down = True
+        if self._watch_task:
+            self._watch_task.cancel()
+            self._watch_task = None
         # Flush any pending debounced devices_cache write before tearing down.
         if self._flush_handle is not None:
             self._flush_handle.cancel()
@@ -300,10 +348,9 @@ class MatterBridgeServer:
         if not new_node or 0 not in new_node.endpoints:
             return []
 
-        new_uid = (
-            new_node.get_attribute_value(0, 40, 18)
-            or new_node.get_attribute_value(0, 40, 15)
-        )
+        new_uid = new_node.get_attribute_value(
+            0, 40, 18
+        ) or new_node.get_attribute_value(0, 40, 15)
         if not new_uid:
             return []
 
@@ -311,9 +358,8 @@ class MatterBridgeServer:
         for node in list(self.client.get_nodes()):
             if node.node_id == new_node_id or 0 not in node.endpoints:
                 continue
-            old_uid = (
-                node.get_attribute_value(0, 40, 18)
-                or node.get_attribute_value(0, 40, 15)
+            old_uid = node.get_attribute_value(0, 40, 18) or node.get_attribute_value(
+                0, 40, 15
             )
             if old_uid == new_uid:
                 logging.warning(
@@ -372,7 +418,9 @@ class MatterBridgeServer:
         # Migrate occupancy_subscribers (in-memory)
         for old_id, new_id in mapping.items():
             if old_id in self.occupancy_subscribers:
-                self.occupancy_subscribers[new_id] = self.occupancy_subscribers.pop(old_id)
+                self.occupancy_subscribers[new_id] = self.occupancy_subscribers.pop(
+                    old_id
+                )
 
         logging.info(f"Migrated {len(mapping)} device IDs to stable format.")
 
@@ -387,7 +435,7 @@ class MatterBridgeServer:
         for node in self.client.get_nodes():
             for ep_id, endpoint in node.endpoints.items():
                 device_id, unique_id = self._get_stable_id(node, ep_id)
-                states = {}
+                states: dict[str, Any] = {}
 
                 # On/Off cluster
                 if 6 in endpoint.clusters:
@@ -400,7 +448,9 @@ class MatterBridgeServer:
 
                 # Color control cluster
                 if 768 in endpoint.clusters:
-                    states["color_temp_mireds"] = node.get_attribute_value(ep_id, 768, 7)
+                    states["color_temp_mireds"] = node.get_attribute_value(
+                        ep_id, 768, 7
+                    )
 
                 # Thermostat cluster (Aqara hubs expose IR ACs as Matter Thermostats)
                 if 513 in endpoint.clusters:
@@ -423,10 +473,24 @@ class MatterBridgeServer:
 
                             if name == "occupancy":
                                 cur = int(val)
-                                prev_dev = next((d for d in self.cached_devices if d["id"] == device_id), None)
-                                prev = prev_dev.get("states", {}).get("occupancy", 0) if prev_dev else 0
+                                prev_dev = next(
+                                    (
+                                        d
+                                        for d in self.cached_devices
+                                        if d["id"] == device_id
+                                    ),
+                                    None,
+                                )
+                                prev = (
+                                    prev_dev.get("states", {}).get("occupancy", 0)
+                                    if prev_dev
+                                    else 0
+                                )
 
-                                if cur != prev and device_id in self.occupancy_subscribers:
+                                if (
+                                    cur != prev
+                                    and device_id in self.occupancy_subscribers
+                                ):
                                     ts = int(time.time())
                                     for q in self.occupancy_subscribers[device_id]:
                                         try:
@@ -438,13 +502,15 @@ class MatterBridgeServer:
                                     self.occupancy_history[device_id] = int(time.time())
                                     occupancy_updated = True
 
-                devices.append({
-                    "id": device_id,
-                    "node_id": node.node_id,
-                    "endpoint_id": ep_id,
-                    "unique_id": unique_id,
-                    "states": states,
-                })
+                devices.append(
+                    {
+                        "id": device_id,
+                        "node_id": node.node_id,
+                        "endpoint_id": ep_id,
+                        "unique_id": unique_id,
+                        "states": states,
+                    }
+                )
 
         self.cached_devices = devices
         self._schedule_flush()

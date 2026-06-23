@@ -20,6 +20,7 @@ def bridge(tmp_path, monkeypatch):
 
 # -- Step 2: debounced flush -------------------------------------------------
 
+
 def test_flush_skips_unchanged(bridge, monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(bridge, "_save_json", lambda path, data: calls.append(path))
@@ -44,12 +45,13 @@ def test_schedule_flush_inline_without_loop(bridge):
         {"id": "dev_y", "node_id": 1, "endpoint_id": 1, "states": {"on_off": True}}
     ]
     bridge._schedule_flush()
-    with open("devices_cache.txt", encoding="utf-8") as f:
+    with open("devices_cache.json", encoding="utf-8") as f:
         written = json.load(f)
     assert written[0]["id"] == "dev_y"
 
 
 # -- Step 2: one-shot ID migration ------------------------------------------
+
 
 def test_id_migration_runs_once(bridge):
     bridge.device_names = {"dev_1_1": ["Old Name"]}
@@ -67,6 +69,7 @@ def test_id_migration_runs_once(bridge):
 
 
 # -- Step 3: atomic + loud persistence --------------------------------------
+
 
 def test_save_json_atomic_no_tmp_left(bridge, tmp_path):
     p = str(tmp_path / "x.json")

@@ -22,12 +22,15 @@ from cli.core import DeviceController  # noqa: E402
 from cli.logic_bridge import LogicalBridgeManager  # noqa: E402
 from tests.fakes import FIXTURES, FakeBridge  # noqa: E402
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 # --------------------------------------------------------------------------- #
 # Lifespan override                                                           #
 # --------------------------------------------------------------------------- #
+
 
 def make_lifespan(fixture: str, cache_file: str):
     @asynccontextmanager
@@ -37,8 +40,11 @@ def make_lifespan(fixture: str, cache_file: str):
         logical.load_cache()
         srv.controller = DeviceController(bridge, logical)
         logical.refresh_bridges()
-        logging.info(f"[fake] ready with fixture={fixture}, devices={len(bridge.cached_devices)}")
+        logging.info(
+            f"[fake] ready with fixture={fixture}, devices={len(bridge.cached_devices)}"
+        )
         yield
+
     return lifespan
 
 

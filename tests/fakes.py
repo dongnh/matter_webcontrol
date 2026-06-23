@@ -20,37 +20,49 @@ logger = logging.getLogger(__name__)
 FIXTURES: dict[str, list[dict]] = {
     "A": [
         {
-            "id": "dev_aaaa0001", "node_id": 1, "endpoint_id": 1,
+            "id": "dev_aaaa0001",
+            "node_id": 1,
+            "endpoint_id": 1,
             "states": {"on_off": True, "brightness_raw": 200},
         },
         {
-            "id": "dev_aaaa0002", "node_id": 1, "endpoint_id": 2,
+            "id": "dev_aaaa0002",
+            "node_id": 1,
+            "endpoint_id": 2,
             "states": {"on_off": False, "brightness_raw": 0, "color_temp_mireds": 320},
         },
         {
-            "id": "dev_aaaa0003", "node_id": 2, "endpoint_id": 1,
+            "id": "dev_aaaa0003",
+            "node_id": 2,
+            "endpoint_id": 1,
             "states": {"occupancy": 0},
         },
     ],
     "B": [
         {
-            "id": "dev_bbbb0001", "node_id": 10, "endpoint_id": 1,
+            "id": "dev_bbbb0001",
+            "node_id": 10,
+            "endpoint_id": 1,
             "states": {"on_off": True, "brightness_raw": 100, "color_temp_mireds": 250},
         },
         {
-            "id": "dev_bbbb0002", "node_id": 11, "endpoint_id": 1,
+            "id": "dev_bbbb0002",
+            "node_id": 11,
+            "endpoint_id": 1,
             "states": {"temperature": 23, "humidity": 55},
         },
     ],
     # Physical AC (Thermostat cluster) for set_ac / get_ac tests.
     "ac": [
         {
-            "id": "dev_ac000001", "node_id": 5, "endpoint_id": 1,
+            "id": "dev_ac000001",
+            "node_id": 5,
+            "endpoint_id": 1,
             "states": {
-                "system_mode": 3,            # Cool
-                "local_temperature": 2500,   # 25.00 °C
-                "cooling_setpoint": 2600,    # 26.00 °C
-                "heating_setpoint": 2000,    # 20.00 °C
+                "system_mode": 3,  # Cool
+                "local_temperature": 2500,  # 25.00 °C
+                "cooling_setpoint": 2600,  # 26.00 °C
+                "heating_setpoint": 2000,  # 20.00 °C
             },
         },
     ],
@@ -70,6 +82,7 @@ _THERMO_ATTR_KEYS = {
 # Fake Matter client — minimal surface DeviceController needs                  #
 # --------------------------------------------------------------------------- #
 
+
 class FakeMatterClient:
     """Stand-in for matter_server.client.MatterClient."""
 
@@ -84,7 +97,9 @@ class FakeMatterClient:
                 return dev
         return None
 
-    async def send_device_command(self, node_id: int, endpoint_id: int, cmd: Any) -> None:
+    async def send_device_command(
+        self, node_id: int, endpoint_id: int, cmd: Any
+    ) -> None:
         dev = self._device_at(node_id, endpoint_id)
         if dev is None:
             return
@@ -96,10 +111,14 @@ class FakeMatterClient:
             dev["states"]["brightness_raw"] = lvl
             dev["states"]["on_off"] = lvl > 0
         elif cls == "MoveToColorTemperature":
-            dev["states"]["color_temp_mireds"] = getattr(cmd, "colorTemperatureMireds", 0)
+            dev["states"]["color_temp_mireds"] = getattr(
+                cmd, "colorTemperatureMireds", 0
+            )
         logger.info("[fake] cmd %s on %s -> %s", cls, dev["id"], dev["states"])
 
-    async def write_attribute(self, node_id: int, attribute_path: str, value: Any) -> None:
+    async def write_attribute(
+        self, node_id: int, attribute_path: str, value: Any
+    ) -> None:
         """Record + apply a Thermostat attribute write (ep/cluster/attr)."""
         self.writes.append((node_id, attribute_path, value))
         try:
@@ -125,6 +144,7 @@ class FakeMatterClient:
 # --------------------------------------------------------------------------- #
 # Fake bridge — drop-in replacement for MatterBridgeServer                     #
 # --------------------------------------------------------------------------- #
+
 
 class FakeBridge:
     """No-Matter-dependency stand-in implementing the bridge public facade."""
@@ -188,6 +208,7 @@ class FakeBridge:
 
     def subscribe_occupancy(self, device_id: str):
         import asyncio
+
         queue: asyncio.Queue = asyncio.Queue()
         self.occupancy_subscribers.setdefault(device_id, []).append(queue)
         return queue

@@ -29,16 +29,19 @@ from cli.schemas import (
     UnregisterPayload,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # Unauthenticated read-only endpoints (liveness + version).
 PUBLIC_PATHS = {"/health", "/version"}
 
-controller: Optional[DeviceController] = None
+controller: DeviceController = None  # type: ignore[assignment]  # set in lifespan
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_params(request: Request, payload, fields: list[str]) -> dict:
     if request.method == "POST" and payload:
@@ -53,7 +56,9 @@ def _coerce(value, caster):
     try:
         return caster(value)
     except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail=f"Invalid parameter value: {value!r}")
+        raise HTTPException(
+            status_code=400, detail=f"Invalid parameter value: {value!r}"
+        )
 
 
 def _wrap(fn, *args, status=400, **kwargs):
@@ -88,6 +93,7 @@ async def _wrap_async(coro, status=400):
 # Lifespan
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global controller
@@ -110,7 +116,8 @@ async def lifespan(app: FastAPI):
     result = logical.refresh_bridges()
     logging.info(
         "Startup sync complete. Refreshed Matter cache and %d logical bridges (%d failed).",
-        result["refreshed"], result["failed"],
+        result["refreshed"],
+        result["failed"],
     )
 
     yield
@@ -129,9 +136,27 @@ async def auth_middleware(request: Request, call_next):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
     return await call_next(request)
 
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    # Logs method/path/status (+ device id from the query). Never logs headers
+    # or the body, so the X-API-Key and body secrets are not recorded (G6).
+    response = await call_next(request)
+    dev_id = request.query_params.get("id")
+    logging.info(
+        "%s %s -> %s%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        f" id={dev_id}" if dev_id else "",
+    )
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/devices")
 async def get_devices_api():
@@ -185,7 +210,9 @@ async def add_bridge_api(payload: BridgePayload):
     # api_key arrives in the JSON body, never the URL (S1). add_bridge does a
     # blocking federation fetch — offload off the event loop.
     return await _wrap_async(
-        asyncio.to_thread(controller.add_bridge, payload.ip, payload.port, payload.api_key)
+        asyncio.to_thread(
+            controller.add_bridge, payload.ip, payload.port, payload.api_key
+        )
     )
 
 
@@ -216,7 +243,9 @@ async def set_device_api(request: Request, payload: Optional[ControlPayload] = N
     brightness = _coerce(params["brightness"], float)
     temperature = _coerce(params["temperature"], int)
 
-    return await _wrap_async(controller.set_device(params["id"], brightness, temperature))
+    return await _wrap_async(
+        controller.set_device(params["id"], brightness, temperature)
+    )
 
 
 @app.post("/api/batch")
@@ -233,7 +262,9 @@ async def level_api(request: Request, payload: Optional[LevelPayload] = None):
     if params["level"] is None:
         return _wrap(controller.get_level, params["id"])
 
-    return await _wrap_async(controller.set_level(params["id"], _coerce(params["level"], int)))
+    return await _wrap_async(
+        controller.set_level(params["id"], _coerce(params["level"], int))
+    )
 
 
 @app.api_route("/api/mired", methods=["GET", "POST"])
@@ -245,7 +276,9 @@ async def mired_api(request: Request, payload: Optional[MiredPayload] = None):
     if params["mireds"] is None:
         return _wrap(controller.get_mired, params["id"])
 
-    return await _wrap_async(controller.set_mired(params["id"], _coerce(params["mireds"], int)))
+    return await _wrap_async(
+        controller.set_mired(params["id"], _coerce(params["mireds"], int))
+    )
 
 
 @app.get("/api/subscribe")
@@ -255,6 +288,7 @@ async def subscribe_api(request: Request, id: str):
 
     async def stream():
         import json as _json
+
         try:
             while True:
                 if await request.is_disconnected():
@@ -264,8 +298,12 @@ async def subscribe_api(request: Request, id: str):
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
                     continue
-                iso = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat()
-                payload = _json.dumps({"id": resolved, "occupancy": state, "timestamp": iso})
+                iso = datetime.datetime.fromtimestamp(
+                    ts, datetime.timezone.utc
+                ).isoformat()
+                payload = _json.dumps(
+                    {"id": resolved, "occupancy": state, "timestamp": iso}
+                )
                 yield f"data: {payload}\n\n"
         except asyncio.CancelledError:
             pass
@@ -282,11 +320,16 @@ async def list_acs_api():
 
 @app.api_route("/api/ac", methods=["GET", "POST"])
 async def ac_api(request: Request, payload: Optional[ACPayload] = None):
-    params = _get_params(request, payload, ["id", "on", "mode", "system_mode", "setpoint", "fan_speed"])
+    params = _get_params(
+        request, payload, ["id", "on", "mode", "system_mode", "setpoint", "fan_speed"]
+    )
     if not params["id"]:
         raise HTTPException(status_code=400, detail="Missing device id")
 
-    if all(params[k] is None for k in ("on", "mode", "system_mode", "setpoint", "fan_speed")):
+    if all(
+        params[k] is None
+        for k in ("on", "mode", "system_mode", "setpoint", "fan_speed")
+    ):
         return _wrap(controller.get_ac, params["id"])
 
     def parse_bool(v):
@@ -298,12 +341,18 @@ async def ac_api(request: Request, payload: Optional[ACPayload] = None):
 
     on = parse_bool(params["on"])
     # system_mode is the documented alias; mode is canonical (API4).
-    mode_raw = params["system_mode"] if params["system_mode"] is not None else params["mode"]
+    mode_raw = (
+        params["system_mode"] if params["system_mode"] is not None else params["mode"]
+    )
     mode = _coerce(mode_raw, int)
     setpoint = _coerce(params["setpoint"], float)
     fan_speed = _coerce(params["fan_speed"], int)
 
-    return await _wrap_async(controller.set_ac(params["id"], on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed))
+    return await _wrap_async(
+        controller.set_ac(
+            params["id"], on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed
+        )
+    )
 
 
 @app.post("/api/refresh")
@@ -321,6 +370,7 @@ async def metadata_api(request: Request):
 
 # -- Unauthenticated liveness + version (PUBLIC_PATHS) ----------------------
 
+
 @app.get("/health")
 async def health_api():
     ready = bool(controller and controller.bridge and controller.bridge.is_ready())
@@ -336,20 +386,44 @@ async def version_api():
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description="Matter API Web Server")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
-    parser.add_argument("--host", type=str, default="127.0.0.1",
-                        help="Bind address (default: 127.0.0.1; use 0.0.0.0 to expose on LAN)")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1; use 0.0.0.0 to expose on LAN)",
+    )
     parser.add_argument("--fabric", type=str, default=None, help="Matter fabric label")
-    parser.add_argument("--api-key", type=str, default=os.environ.get("MATTER_SRV_KEY"),
-                        help="Require X-API-Key header (or set MATTER_SRV_KEY env var)")
-    parser.add_argument("--data-dir", type=str, default=None,
-                        help="Directory for caches + Matter fabric storage "
-                             "(or set MATTER_DATA_DIR; defaults to the current directory)")
-    parser.add_argument("--insecure", action="store_true",
-                        help="Allow binding to a non-loopback host without an API key")
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=os.environ.get("MATTER_SRV_KEY"),
+        help="Require X-API-Key header (or set MATTER_SRV_KEY env var)",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Directory for caches + Matter fabric storage "
+        "(or set MATTER_DATA_DIR; defaults to the current directory)",
+    )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Allow binding to a non-loopback host without an API key",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=os.environ.get("MATTER_LOG_LEVEL", "INFO"),
+        help="Logging level (or set MATTER_LOG_LEVEL; default INFO)",
+    )
     args = parser.parse_args()
+
+    logging.getLogger().setLevel(args.log_level.upper())
 
     data_dir = paths.set_data_dir(args.data_dir)
     logging.info("Data directory: %s", data_dir)
@@ -362,7 +436,8 @@ def main():
     app.state.port = args.port
     app.state.fabric_label = args.fabric
     app.state.api_key = args.api_key
-    uvicorn.run(app, host=args.host, port=args.port)
+    # access logging is handled by access_log_middleware (redacts secrets).
+    uvicorn.run(app, host=args.host, port=args.port, access_log=False)
 
 
 if __name__ == "__main__":

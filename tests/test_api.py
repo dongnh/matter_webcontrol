@@ -6,8 +6,8 @@ import pytest
 
 from tests.conftest import TEST_KEY
 
-
 # -- auth -------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_no_key_401(make_client):
@@ -42,6 +42,7 @@ async def test_good_key_200(client):
 
 
 # -- standalone queries / control -------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_devices_contains_fixture(client):
@@ -103,6 +104,7 @@ async def test_batch_per_action_results(client):
 
 
 # -- metadata ---------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_metadata_api_version(client):

@@ -13,13 +13,16 @@ import argparse
 import json
 import logging
 import os
-import urllib.request
 import urllib.error
 import urllib.parse
+import urllib.request
+from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 mcp = FastMCP("matter-webcontrol")
 
@@ -32,8 +35,9 @@ def _auth_headers() -> dict:
     return {"X-API-Key": _api_key} if _api_key else {}
 
 
-def _request(method: str, path: str, params: dict | None = None,
-             body: dict | None = None) -> dict | list:
+def _request(
+    method: str, path: str, params: dict | None = None, body: dict | None = None
+) -> Any:
     """Call matter-srv, returning a structured {"error": ...} on failure
     instead of raising a raw traceback at the MCP boundary (E6)."""
     url = f"{_base_url}{path}"
@@ -62,17 +66,18 @@ def _request(method: str, path: str, params: dict | None = None,
         return {"error": "connection_failed", "detail": str(e.reason)}
 
 
-def _get(path: str, params: dict | None = None) -> dict | list:
+def _get(path: str, params: dict | None = None) -> Any:
     return _request("GET", path, params=params)
 
 
-def _post(path: str, body: dict) -> dict | list:
+def _post(path: str, body: dict) -> Any:
     return _request("POST", path, body=body)
 
 
 # ---------------------------------------------------------------------------
 # Query tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 def get_devices() -> list[dict]:
@@ -116,10 +121,15 @@ def get_status() -> dict:
 # Control tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
-def set_device(id: str, brightness: float | None = None, temperature: int | None = None) -> dict:
+def set_device(
+    id: str, brightness: float | None = None, temperature: int | None = None
+) -> dict:
     """Control a device. Brightness: 0.0 (off) to 1.0 (full). Temperature: Kelvin (e.g. 4000)."""
-    return _post("/api/set", {"id": id, "brightness": brightness, "temperature": temperature})
+    return _post(
+        "/api/set", {"id": id, "brightness": brightness, "temperature": temperature}
+    )
 
 
 @mcp.tool()
@@ -149,6 +159,7 @@ def batch_control(actions: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Management tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 def set_name(id: str, name: str) -> dict:
@@ -208,8 +219,13 @@ def get_ac(id: str) -> dict:
 
 
 @mcp.tool()
-def set_ac(id: str, on: bool | None = None, mode: int | None = None,
-           setpoint: float | None = None, fan_speed: int | None = None) -> dict:
+def set_ac(
+    id: str,
+    on: bool | None = None,
+    mode: int | None = None,
+    setpoint: float | None = None,
+    fan_speed: int | None = None,
+) -> dict:
     """Control an AC.
 
     - on=True turns on (resumes last non-zero SystemMode, defaulting to Cool=3); on=False turns off.
@@ -219,8 +235,16 @@ def set_ac(id: str, on: bool | None = None, mode: int | None = None,
     - fan_speed (0-100): forwarded to logical-bridge ACs that support it; rejected on
       physical Matter ACs.
     """
-    return _post("/api/ac", {"id": id, "on": on, "mode": mode,
-                             "setpoint": setpoint, "fan_speed": fan_speed})
+    return _post(
+        "/api/ac",
+        {
+            "id": id,
+            "on": on,
+            "mode": mode,
+            "setpoint": setpoint,
+            "fan_speed": fan_speed,
+        },
+    )
 
 
 @mcp.tool()
@@ -233,21 +257,49 @@ def refresh() -> dict:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     global _base_url, _api_key
 
     parser = argparse.ArgumentParser(description="Matter MCP Server (HTTP client)")
-    parser.add_argument("--host", type=str, default="localhost", help="Matter HTTP server host")
-    parser.add_argument("--port", type=int, default=8080, help="Matter HTTP server port")
-    parser.add_argument("--api-key", type=str, default=os.environ.get("MATTER_SRV_KEY"),
-                        help="X-API-Key header for the matter-srv (or set MATTER_SRV_KEY env var)")
-    parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "http"],
-                        help="MCP transport: stdio for local AI agents (default), sse/http for LAN access.")
-    parser.add_argument("--mcp-host", default="127.0.0.1",
-                        help="Bind host for sse/http MCP transport (default 127.0.0.1; use 0.0.0.0 for LAN).")
-    parser.add_argument("--mcp-port", type=int, default=7861,
-                        help="Bind port for sse/http MCP transport (default 7861).")
+    parser.add_argument(
+        "--host", type=str, default="localhost", help="Matter HTTP server host"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8080, help="Matter HTTP server port"
+    )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=os.environ.get("MATTER_SRV_KEY"),
+        help="X-API-Key header for the matter-srv (or set MATTER_SRV_KEY env var)",
+    )
+    parser.add_argument(
+        "--transport",
+        default="stdio",
+        choices=["stdio", "sse", "http"],
+        help="MCP transport: stdio for local AI agents (default), sse/http for LAN access.",
+    )
+    parser.add_argument(
+        "--mcp-host",
+        default="127.0.0.1",
+        help="Bind host for sse/http MCP transport (default 127.0.0.1; use 0.0.0.0 for LAN).",
+    )
+    parser.add_argument(
+        "--mcp-port",
+        type=int,
+        default=7861,
+        help="Bind port for sse/http MCP transport (default 7861).",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=os.environ.get("MATTER_LOG_LEVEL", "INFO"),
+        help="Logging level (or set MATTER_LOG_LEVEL; default INFO)",
+    )
     args = parser.parse_args()
+
+    logging.getLogger().setLevel(args.log_level.upper())
 
     _base_url = f"http://{args.host}:{args.port}"
     _api_key = args.api_key
@@ -272,6 +324,7 @@ def main():
             allowed_hosts.extend([h, f"{h}:*"])
         if args.mcp_host == "0.0.0.0":
             import socket
+
             hostname = socket.gethostname()
             allowed_hosts.extend([hostname, f"{hostname}:*"])
             logging.warning(
@@ -284,12 +337,16 @@ def main():
             allowed_hosts=sorted(set(allowed_hosts)),
         )
     except Exception as e:  # pragma: no cover
-        logging.warning(f"Could not configure transport_security ({e}); "
-                        f"requests may be rejected with 'Invalid Host header'.")
+        logging.warning(
+            f"Could not configure transport_security ({e}); "
+            f"requests may be rejected with 'Invalid Host header'."
+        )
 
     transport_name = "streamable-http" if args.transport == "http" else "sse"
-    logging.info(f"Starting MCP transport={transport_name} bind={args.mcp_host}:{args.mcp_port}")
-    mcp.run(transport=transport_name)
+    logging.info(
+        f"Starting MCP transport={transport_name} bind={args.mcp_host}:{args.mcp_port}"
+    )
+    mcp.run(transport=cast(Any, transport_name))
 
 
 if __name__ == "__main__":

@@ -7,13 +7,22 @@ import pytest
 from cli.logic_bridge import LogicalBridgeManager
 from tests.conftest import TEST_KEY
 
-
 # -- POST-only mutations (S3) -----------------------------------------------
 
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/api/toggle", "/api/bridge", "/api/refresh",
-                                  "/api/register", "/api/unregister",
-                                  "/api/name", "/api/name/remove"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/toggle",
+        "/api/bridge",
+        "/api/refresh",
+        "/api/register",
+        "/api/unregister",
+        "/api/name",
+        "/api/name/remove",
+    ],
+)
 async def test_mutations_reject_get(client, path):
     resp = await client.get(path, params={"id": "dev_aaaa0001"})
     assert resp.status_code == 405
@@ -30,6 +39,7 @@ async def test_bridge_api_key_in_body(client):
 
 
 # -- unauthenticated health/version (API8) ----------------------------------
+
 
 @pytest.mark.asyncio
 async def test_health_and_version_unauthenticated(make_client):
@@ -48,13 +58,17 @@ async def test_health_and_version_unauthenticated(make_client):
 
 # -- typed coercion (API11): bad query value -> 400, not 500 ----------------
 
+
 @pytest.mark.asyncio
 async def test_bad_query_value_is_400(client):
-    resp = await client.get("/api/set", params={"id": "dev_aaaa0001", "brightness": "abc"})
+    resp = await client.get(
+        "/api/set", params={"id": "dev_aaaa0001", "brightness": "abc"}
+    )
     assert resp.status_code == 400
 
 
 # -- SSRF / self-registration (S2, G2) --------------------------------------
+
 
 def _mgr(tmp_path, **identity):
     mgr = LogicalBridgeManager(cache_file=str(tmp_path / "bridge.json"))
