@@ -21,6 +21,18 @@ dependencies = [
     "mcp[cli]",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "anyio",
+    "ruff",
+    "black",
+    "isort",
+    "mypy",
+]
+
 [project.scripts]
 matter-srv = "cli.server:main"
 matter-mcp = "cli.mcp_server:main"
@@ -43,3 +55,8 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

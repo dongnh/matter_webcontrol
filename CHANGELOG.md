@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — restructure (risk-first)
+
+### Internal / tooling
+
+- **Test suite** — added `tests/` (pytest + pytest-asyncio) with a single fakes
+  module (`tests/fakes.py`) shared by the dev harness, an in-process httpx
+  `ASGITransport` client fixture, and ported single-instance smoke assertions.
+  `pyproject.toml` gains `[project.optional-dependencies].dev` and pytest config.
+- **Dev harness** — `dev/fake_server.py` now imports fixtures/fakes from
+  `tests/fakes.py` (no duplicated fixtures); `dev/start_two.sh` and
+  `dev/smoke.sh` honor `A_PORT`/`B_PORT` so they can run alongside a live server.
+
 ## v0.27.0
 
 ### New Features

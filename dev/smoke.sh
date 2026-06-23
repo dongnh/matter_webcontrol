@@ -4,8 +4,10 @@
 
 set -u
 
-A_URL=http://127.0.0.1:8080
-B_URL=http://127.0.0.1:8090
+A_PORT=${A_PORT:-8080}
+B_PORT=${B_PORT:-8090}
+A_URL=http://127.0.0.1:$A_PORT
+B_URL=http://127.0.0.1:$B_PORT
 A_KEY=${A_KEY:-keyA}
 B_KEY=${B_KEY:-keyB}
 
@@ -41,7 +43,7 @@ check "A set_mired clamp 999 → 500" '"mireds":500' "$(curl_a -X POST -H 'Conte
 check "A unknown device → 404" 'not found' "$(curl_a "$A_URL/api/level?id=dev_zzzz")"
 
 echo "== federation A → B =="
-check "A registers B as logical bridge" '"success"' "$(curl_a "$A_URL/api/bridge?ip=127.0.0.1&port=8090&api_key=$B_KEY")"
+check "A registers B as logical bridge" '"success"' "$(curl_a "$A_URL/api/bridge?ip=127.0.0.1&port=$B_PORT&api_key=$B_KEY")"
 check "A now sees B's dev_bbbb0001" 'dev_bbbb0001' "$(curl_a $A_URL/api/devices)"
 check "A controls B's light via /api/set" '"type":"logical"' "$(curl_a -X POST -H 'Content-Type: application/json' -d '{"id":"dev_bbbb0001","brightness":0.5}' $A_URL/api/set)"
 
