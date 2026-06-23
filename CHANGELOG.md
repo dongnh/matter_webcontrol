@@ -1,16 +1,61 @@
 # Changelog
 
-## Unreleased — restructure (risk-first)
+## v0.28.0 — risk-first restructure
 
-### Internal / tooling
+### Breaking Changes
 
-- **Test suite** — added `tests/` (pytest + pytest-asyncio) with a single fakes
-  module (`tests/fakes.py`) shared by the dev harness, an in-process httpx
-  `ASGITransport` client fixture, and ported single-instance smoke assertions.
-  `pyproject.toml` gains `[project.optional-dependencies].dev` and pytest config.
-- **Dev harness** — `dev/fake_server.py` now imports fixtures/fakes from
-  `tests/fakes.py` (no duplicated fixtures); `dev/start_two.sh` and
-  `dev/smoke.sh` honor `A_PORT`/`B_PORT` so they can run alongside a live server.
+- **Mutations are POST-only** — `/api/toggle`, `/api/name`, `/api/name/remove`,
+  `/api/bridge`, `/api/bridge/remove`, `/api/register`, `/api/unregister`, and
+  `/api/refresh` now require POST; a GET returns `405`. Secrets (peer api-key,
+  pairing code) travel in the JSON body, never the URL. Any GET-based caller
+  must switch to POST. MCP tools were updated to match.
+- **Non-loopback bind requires a key** — binding to a non-loopback host without
+  `--api-key` is now refused (was: warning). Pass `--insecure` to override.
+- **`devices_cache.txt` → `devices_cache.json`** — rebuilt from Matter on first
+  start, so no manual migration is needed.
+
+### New Features
+
+- **`GET /health`** (unauthenticated, reports `bridge_ready`) and **`GET /version`**.
+- **`fan_speed` on `/api/ac` + MCP `set_ac`**; new MCP tools `unregister_node`
+  and `get_metadata`.
+- **`--data-dir` / `MATTER_DATA_DIR`** pins one directory for all caches and the
+  Matter fabric storage; the absolute storage path is logged at startup.
+- **`--log-level` / `MATTER_LOG_LEVEL`** on both `matter-srv` and `matter-mcp`.
+
+### Fixes
+
+- **`set_ac` heat mode** — the setpoint is now written to the heating setpoint
+  (attr 18) in Heat/EmergencyHeat and the cooling setpoint (attr 17) in
+  Cool/Precooling, chosen by effective mode (was: always cooling). A single
+  setpoint in Auto is rejected; the result reports a neutral `setpoint` key and
+  which writes landed on partial failure.
+- **`register_device`** attaches the alias to the exact device(s) of the new
+  node (was: "first unnamed"); reports `name_not_applied` when none matched.
+- **`fan_speed` on a physical AC** raises instead of silently succeeding.
+- **Lights** report their stored brightness even when off (`state` carries on/off).
+- **Aliases on logical devices** now appear consistently across endpoints; list
+  endpoints and status counts agree and a federation loop can't double-count.
+- **Atomic, loud cache writes** (`tmp` + `os.replace`, re-raise `OSError`) so a
+  failed `set_name` no longer reports success.
+
+### Security
+
+- Constant-time api-key compare; SSRF guard + self-registration rejection on
+  `add_bridge`; `0600` perms on `bridge_cache.json`; MCP keeps DNS-rebinding
+  protection on with an allowed-hosts list; remote `HTTPError`s are translated
+  to proper statuses / structured `{error}`.
+
+### Internal / Performance
+
+- Blocking federation calls run via `asyncio.to_thread` (a slow peer no longer
+  freezes the event loop); `refresh_bridges` runs concurrently and reports
+  `{refreshed, failed}`.
+- `devices_cache` writes are debounced off the `ATTRIBUTE_UPDATED` hot path and
+  skipped when unchanged; the ID migration runs once at startup behind a marker.
+- New `cli/{constants,conversions,serializers,paths,schemas,auth}.py`; the bridge
+  gained a public facade (core/server no longer touch its privates).
+- pytest suite (`tests/`), CI (`ruff`/`black`/`mypy`/`pytest`), pinned deps.
 
 ## v0.27.0
 
@@ -19,6 +64,7 @@
 - **Logical-bridge AC control** — `/api/ac` (and the underlying `get_ac` / `set_ac` / `get_acs`) now route AC and heater devices that come from remote logical bridges, not just locally-paired Matter thermostats. Reads return the same schema as native ACs; writes are forwarded as REST calls (`LogicalBridgeClient.set_ac`). This unlocks HomeKit-only heaters (e.g. Aqara Bathroom Heater T1 via [matter-homekit-bridge](https://github.com/dongnh/matter-homekit-bridge)) as first-class thermostats.
 - **`fan_speed` on `/api/ac`** — new optional field on the AC endpoint and `_ac_entry` payload, surfaced for devices whose backend bridge reports/accepts it (`0–100`). No effect on devices that don't expose a fan characteristic.
 - **`system_mode` synonym in `/api/ac` payload** — accepted alongside `mode` for clarity.
+- **MCP SSE/HTTP transport** — `matter-mcp` gained `--transport {stdio,sse,http}` with `--mcp-host`/`--mcp-port` for LAN access (was stdio-only). (In v0.28.0 the DNS-rebinding protection it disabled is replaced by an allowed-hosts list.)
 
 ## v0.26.1
 

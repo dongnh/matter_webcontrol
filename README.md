@@ -24,8 +24,9 @@ curl -H "X-API-Key: $MATTER_SRV_KEY" http://127.0.0.1:8080/api/status
 # → {"lights_on":0,"lights_off":0,"sensors_active":0,"logical_bridges":0,"total_devices":0}
 
 # Pair a Matter device (get the code from the device's app, e.g. Aqara Home)
-curl -H "X-API-Key: $MATTER_SRV_KEY" \
-  "http://127.0.0.1:8080/api/register?code=2456-515-1552&name=Living%20Room"
+curl -H "X-API-Key: $MATTER_SRV_KEY" -H "Content-Type: application/json" \
+  -d '{"code":"2456-515-1552","name":"Living Room"}' \
+  http://127.0.0.1:8080/api/register
 ```
 
 Requires Python 3.12+.
@@ -80,9 +81,12 @@ Requires Python 3.12+.
 | Flag | Default | Description |
 |---|---|---|
 | `--port` | `8080` | REST port. Matter WebSocket binds to `port + 1` |
-| `--host` | `127.0.0.1` | Bind address. Use `0.0.0.0` to expose on LAN (api-key required) |
-| `--api-key` | `$MATTER_SRV_KEY` | Required header value. If unset and `--host 0.0.0.0`, a warning is logged |
+| `--host` | `127.0.0.1` | Bind address. Use `0.0.0.0` to expose on LAN |
+| `--api-key` | `$MATTER_SRV_KEY` | Required `X-API-Key` value. A **non-loopback bind without a key is refused** unless `--insecure` |
 | `--fabric` | _(none)_ | Matter fabric label shown to commissioned devices |
+| `--data-dir` | _(cwd)_ | Directory for caches + Matter fabric storage (or `$MATTER_DATA_DIR`). The absolute path is logged at startup |
+| `--insecure` | _(off)_ | Allow a non-loopback bind without an API key |
+| `--log-level` | `INFO` | Logging level (or `$MATTER_LOG_LEVEL`) |
 
 ### `matter-mcp`
 
@@ -93,6 +97,12 @@ Connects to a running `matter-srv` and exposes its operations as MCP tools.
 | `--host` | `localhost` | matter-srv host |
 | `--port` | `8080` | matter-srv port |
 | `--api-key` | `$MATTER_SRV_KEY` | Forwarded as `X-API-Key` |
+| `--transport` | `stdio` | `stdio` for local AI agents; `sse` / `http` for LAN access |
+| `--mcp-host` | `127.0.0.1` | Bind host for `sse` / `http` transport (`0.0.0.0` for LAN) |
+| `--mcp-port` | `7861` | Bind port for `sse` / `http` transport |
+| `--log-level` | `INFO` | Logging level (or `$MATTER_LOG_LEVEL`) |
+
+For `sse` / `http`, DNS-rebinding protection stays on: only the bind host and loopback are accepted as `Host` headers (a `0.0.0.0` bind also allows the machine hostname).
 
 ---
 
@@ -102,7 +112,9 @@ All endpoints require `X-API-Key: $MATTER_SRV_KEY` (when `--api-key` is set).
 
 Devices are addressed by stable hash-based IDs like `dev_a3f7c1b2`, derived from the hardware UniqueID. Aliases set via `/api/name` are display-only — they are **not** accepted as IDs anywhere.
 
-Error mapping: `404` (device/alias unknown), `400` (bad parameters), `401` (auth), `503` (Matter bridge offline), `500` (other).
+Error mapping: `404` (device/alias unknown), `400` (bad parameters), `401` (auth), `405` (a mutation called with GET — they are POST-only), `503` (Matter bridge offline), `500` (other).
+
+**Mutations are POST-only** and carry their parameters (including secrets like the peer api-key and pairing code) in the JSON body, never the URL.
 
 ### Read
 
@@ -110,20 +122,22 @@ Error mapping: `404` (device/alias unknown), `400` (bad parameters), `401` (auth
 |---|---|
 | `GET /api/status` | Counts: lights on/off, active sensors, ACs on/off, bridges, total devices |
 | `GET /api/devices` | Raw list — every physical and logical device with `states` dict |
-| `GET /api/lights` | Lights with normalized brightness (0.0–1.0) and temperature in Kelvin |
+| `GET /api/lights` | Lights with normalized brightness (0.0–1.0) and temperature in Kelvin. `brightness` reflects the stored level even when off; `state` carries on/off |
 | `GET /api/sensors` | All sensors with their metrics |
 | `GET /api/sensor?id=...` | One sensor by ID |
 | `GET /api/climate` | Temperature (°C) and humidity (%) for every reporting device — thermostat `local_temperature` + standalone temp/humidity sensors. Add `?id=…` for one device. |
-| `GET /api/level?id=...` | Read raw brightness (0–254). Add `&level=N` to set |
-| `GET /api/mired?id=...` | Read color temperature (mireds). Add `&mireds=N` to set |
+| `GET /api/level?id=...` | Read raw brightness (0–254). POST `{"id","level"}` to set |
+| `GET /api/mired?id=...` | Read color temperature (mireds). POST `{"id","mireds"}` to set |
 | `GET /api/metadata` | Declarative bridge info (capabilities + states), used by federation peers |
+| `GET /health` | Unauthenticated liveness — `{"status","bridge_ready"}` |
+| `GET /version` | Unauthenticated version string |
 
 ### Control
 
 | Method & Path | Body / Params |
 |---|---|
 | `POST /api/set` | `{"id":"dev_…","brightness":0.0–1.0,"temperature":Kelvin}` — both fields optional |
-| `GET /api/toggle?id=...` | Flip on/off (lights and ACs — for ACs, off→on resumes the last non-zero `system_mode`) |
+| `POST /api/toggle` | `{"id":"dev_…"}` — flip on/off (lights and ACs — for ACs, off→on resumes the last non-zero `system_mode`) |
 | `POST /api/level` | `{"id":"dev_…","level":0–254}` |
 | `POST /api/mired` | `{"id":"dev_…","mireds":153–500}` (clamped to Matter spec) |
 | `POST /api/batch` | `{"actions":[{"id":..., "brightness":..., "temperature":...}, …]}` — runs in parallel |
@@ -138,13 +152,13 @@ curl -H "X-API-Key: $MATTER_SRV_KEY" \
 
 ### Management
 
-| Method & Path | Params |
+| Method & Path | Body |
 |---|---|
 | `POST /api/name` | `{"id":"dev_…","name":"…"}` — assign alias |
-| `GET /api/name/remove?id=&name=` | Remove alias |
-| `GET /api/register?code=&name=&ip=` | Commission a Matter device by pairing code |
-| `GET /api/unregister?node_id=N` | Unpair a fabric node (cleanup phantom entries) |
-| `GET /api/refresh` | Re-pull caches from Matter server and logical bridges |
+| `POST /api/name/remove` | `{"id":"dev_…","name":"…"}` — remove alias |
+| `POST /api/register` | `{"code":"…","name":"…","ip":"…"}` — commission a Matter device by pairing code (code in body) |
+| `POST /api/unregister` | `{"node_id":N}` — unpair a fabric node (cleanup phantom entries) |
+| `POST /api/refresh` | Re-pull caches from Matter server and logical bridges |
 
 ### Sensors (verified hardware)
 
@@ -159,7 +173,7 @@ All of the following Aqara sensors are bridged via **Hub M200** and surface thro
 
 Notes:
 
-- All four expose **`occupancy`** (0/1) on `/api/sensors` and emit on the `/api/occupancy/stream` SSE feed (see below). Use the device's `dev_*` ID to subscribe.
+- All four expose **`occupancy`** (0/1) on `/api/sensors` and emit on the `/api/subscribe` SSE feed (see below). Use the device's `dev_*` ID to subscribe.
 - Hold/clear times, mmWave sensitivity, and FP2 zone layouts are configured in the **Aqara Home app**, not via Matter — those settings are not exposed as Matter attributes and so cannot be changed from this server.
 - The FP2's per-zone endpoints each get their own stable `dev_*` ID; assign aliases via `POST /api/name` so the zones are recognizable.
 
@@ -171,21 +185,24 @@ State surfaced (alongside the standard `/api/devices` entry):
 
 | Field | Meaning |
 |---|---|
-| `system_mode` | `0`=Off, `1`=Auto, `3`=Cool, `4`=Heat, `7`=FanOnly, `8`=Dry |
+| `system_mode` | `0`=Off, `1`=Auto, `3`=Cool, `4`=Heat, `5`=EmergencyHeat, `6`=Precooling, `7`=FanOnly, `8`=Dry, `9`=Sleep |
 | `on` | `system_mode != 0` |
 | `local_temperature` | °C, read-only |
 | `cooling_setpoint` / `heating_setpoint` | °C |
+| `fan_speed` | `0–100`, only for logical-bridge ACs that report it |
 
-| Method & Path | Params |
+| Method & Path | Body |
 |---|---|
 | `GET /api/acs` | List all AC/Thermostat devices |
 | `GET /api/ac?id=…` | Read one AC (state, setpoints) |
-| `POST /api/ac` | `{"id":"dev_…","on":true,"mode":3,"setpoint":26.0}` |
+| `POST /api/ac` | `{"id":"dev_…","on":true,"mode":3,"setpoint":26.0,"fan_speed":50}` |
 
 Notes:
 - `on=true` resumes the last non-zero `system_mode` (default Cool); `on=false` writes `system_mode=0`.
-- `mode` overrides `on`. `setpoint` is in °C (converted to 1/100 °C internally per Matter spec).
-- `/api/toggle?id=…` and `/api/set` (brightness 0/1) also work on AC IDs — they map to on/off only.
+- `mode` overrides `on`; `system_mode` is accepted as a synonym for `mode`.
+- `setpoint` is in °C (1/100 °C internally) and is routed to the **heating** setpoint in Heat/EmergencyHeat or the **cooling** setpoint in Cool/Precooling, picked by the effective mode. A single `setpoint` in Auto is rejected (the deadband needs both).
+- `fan_speed` (0–100) is forwarded to logical-bridge ACs that support it; it is **rejected** on physical Matter ACs (no Thermostat fan attribute).
+- `POST /api/toggle` and `POST /api/set` (brightness 0/1) also work on AC IDs — they map to on/off only.
 
 ```bash
 # Turn on the Office AC, Cool mode, 26°C
@@ -198,12 +215,12 @@ curl -H "X-API-Key: $MATTER_SRV_KEY" -H "Content-Type: application/json" \
 
 ### Federation
 
-| Method & Path | Params |
+| Method & Path | Body |
 |---|---|
-| `GET /api/bridge?ip=&port=&api_key=` | Register a remote matter-srv as a logical bridge |
-| `GET /api/bridge/remove?ip=&port=` | Unregister |
+| `POST /api/bridge` | `{"ip":"…","port":N,"api_key":"…"}` — register a remote matter-srv (key in body, not URL) |
+| `POST /api/bridge/remove` | `{"ip":"…","port":N}` — unregister |
 
-When a peer is registered, all of its devices appear in `/api/devices` of this instance, and control commands are forwarded automatically.
+When a peer is registered, all of its devices appear in `/api/devices` of this instance, and control commands are forwarded automatically. Registration validates the target (private/loopback IPs or LAN hostnames only) and rejects registering the instance against itself.
 
 ### SSE — occupancy stream
 
@@ -242,7 +259,7 @@ Start `matter-srv` first, then point an MCP client at `matter-mcp`. The MCP serv
 }
 ```
 
-**Available tools** (one per REST endpoint): `get_devices`, `get_lights`, `get_sensors`, `get_sensor`, `get_status`, `set_device`, `toggle`, `set_level`, `set_mired`, `batch_control`, `set_name`, `remove_name`, `add_bridge`, `remove_bridge`, `register_device`, `refresh`.
+**Available tools:** `get_devices`, `get_lights`, `get_sensors`, `get_sensor`, `get_climate`, `get_status`, `set_device`, `toggle`, `set_level`, `set_mired`, `batch_control`, `set_name`, `remove_name`, `add_bridge`, `remove_bridge`, `register_device`, `unregister_node`, `list_acs`, `get_ac`, `set_ac`, `get_metadata`, `refresh`. (Most map to a REST endpoint; the SSE `/api/subscribe` stream is HTTP-only and has no MCP tool.)
 
 ---
 
@@ -259,9 +276,10 @@ matter-srv --host 0.0.0.0 --fabric "Floor 1"
 export MATTER_SRV_KEY=keyB
 matter-srv --host 0.0.0.0 --fabric "Floor 2"
 
-# From host A — register B
-curl -H "X-API-Key: keyA" \
-  "http://127.0.0.1:8080/api/bridge?ip=10.0.0.11&port=8080&api_key=keyB"
+# From host A — register B (peer key in the body, never the URL)
+curl -H "X-API-Key: keyA" -H "Content-Type: application/json" \
+  -d '{"ip":"10.0.0.11","port":8080,"api_key":"keyB"}' \
+  http://127.0.0.1:8080/api/bridge
 ```
 
 After registration, B's devices appear in `curl http://A:8080/api/devices`, and any `/api/set` against a B-owned ID is transparently forwarded over HTTP. No code execution, no script blobs — just REST.
