@@ -5,6 +5,7 @@ calls those endpoints directly — no embedded scripts, no code execution.
 """
 
 import concurrent.futures
+import ipaddress
 import json
 import logging
 import os
@@ -48,9 +49,22 @@ class LogicalBridgeClient:
             headers["X-API-Key"] = self.api_key
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else None
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            # Remote 4xx is a client/config error -> ValueError so the local
+            # _wrap maps it to 400 (not an opaque 500); 5xx -> RuntimeError/503.
+            msg = f"Remote bridge {self.host}:{self.port} returned {e.code}: {body[:200]}"
+            if 400 <= e.code < 500:
+                raise ValueError(msg)
+            raise RuntimeError(msg)
 
     def refresh(self) -> None:
         """Pull device list from the remote and cache it locally."""
@@ -104,6 +118,45 @@ class LogicalBridgeManager:
     def __init__(self, cache_file: Optional[str] = None):
         self.registry: Dict[str, LogicalBridgeClient] = {}
         self.cache_file = cache_file or paths.bridge_cache()
+        # Local identity, set at startup, used to reject self-registration (G2).
+        self.local_host: Optional[str] = None
+        self.local_port: Optional[int] = None
+
+    def _validate_target(self, ip: str, port: int) -> int:
+        """Reject SSRF-prone / self targets with a uniform error (S2, G2).
+
+        - port must be a valid TCP port;
+        - a *literal* IP must be private/loopback/link-local (don't fetch
+          arbitrary public hosts); mDNS/LAN hostnames are allowed as-is;
+        - registering our own bind host+port is refused (federation loop).
+        The error message is identical for every rejection to limit the
+        port-scan oracle."""
+        generic = ValueError("Invalid bridge target")
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            raise generic
+        if not (1 <= port <= 65535):
+            raise generic
+
+        try:
+            addr: Optional[ipaddress._BaseAddress] = ipaddress.ip_address(ip)
+        except ValueError:
+            addr = None  # hostname (e.g. mDNS) — allowed
+
+        if addr is not None and not (
+            addr.is_private or addr.is_loopback or addr.is_link_local
+        ):
+            raise generic
+
+        # Self-registration: same port as us, on a loopback/localhost/our-host ip.
+        if self.local_port is not None and port == self.local_port:
+            same_host = ip == self.local_host or ip in ("localhost",)
+            if addr is not None and addr.is_loopback:
+                same_host = True
+            if same_host:
+                raise generic
+        return port
 
     def load_cache(self) -> None:
         if not os.path.exists(self.cache_file):
@@ -111,16 +164,22 @@ class LogicalBridgeManager:
         try:
             with open(self.cache_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except OSError as e:
+            logging.warning("Could not read bridge cache %s: %s", self.cache_file, e)
             return
-        for cfg in data.values():
+        except json.JSONDecodeError as e:
+            logging.error("Corrupt bridge cache %s: %s", self.cache_file, e)
+            return
+        for nid, cfg in data.items():
             try:
                 self.add_bridge(
                     cfg["ip"], int(cfg["port"]),
                     api_key=cfg.get("api_key"), persist=False,
                 )
-            except Exception:
-                pass  # skip offline bridges
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+                logging.info("Bridge %s unreachable at startup: %s", nid, e)
+            except Exception as e:  # config-shape errors must not look like "offline"
+                logging.warning("Skipping malformed bridge cache entry %s: %s", nid, e)
 
     def _save_cache(self) -> None:
         data = {
@@ -130,7 +189,16 @@ class LogicalBridgeManager:
         tmp = self.cache_file + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
+        # Peer api-keys live here in cleartext — keep it owner-only (S4).
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         os.replace(tmp, self.cache_file)
+        try:
+            os.chmod(self.cache_file, 0o600)
+        except OSError:
+            pass
 
     def add_bridge(
         self,
@@ -139,6 +207,7 @@ class LogicalBridgeManager:
         api_key: Optional[str] = None,
         persist: bool = True,
     ) -> str:
+        port = self._validate_target(ip, port)
         node_id = f"{ip}:{port}"
         client = LogicalBridgeClient(ip, port, api_key)
         client.refresh()

@@ -32,26 +32,42 @@ def _auth_headers() -> dict:
     return {"X-API-Key": _api_key} if _api_key else {}
 
 
-def _get(path: str, params: dict | None = None) -> dict | list:
-    """HTTP GET to the matter-srv server."""
+def _request(method: str, path: str, params: dict | None = None,
+             body: dict | None = None) -> dict | list:
+    """Call matter-srv, returning a structured {"error": ...} on failure
+    instead of raising a raw traceback at the MCP boundary (E6)."""
     url = f"{_base_url}{path}"
     if params:
         clean = {k: v for k, v in params.items() if v is not None}
         if clean:
             url += "?" + urllib.parse.urlencode(clean)
-    req = urllib.request.Request(url, headers=_auth_headers())
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = dict(_auth_headers())
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail: object = ""
+        try:
+            detail = e.read().decode("utf-8", "replace")
+            detail = json.loads(detail)
+        except Exception:
+            pass
+        return {"error": f"HTTP {e.code}", "detail": detail}
+    except urllib.error.URLError as e:
+        return {"error": "connection_failed", "detail": str(e.reason)}
+
+
+def _get(path: str, params: dict | None = None) -> dict | list:
+    return _request("GET", path, params=params)
 
 
 def _post(path: str, body: dict) -> dict | list:
-    """HTTP POST JSON to the matter-srv server."""
-    url = f"{_base_url}{path}"
-    data = json.dumps(body).encode("utf-8")
-    headers = {"Content-Type": "application/json", **_auth_headers()}
-    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    return _request("POST", path, body=body)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +125,7 @@ def set_device(id: str, brightness: float | None = None, temperature: int | None
 @mcp.tool()
 def toggle(id: str) -> dict:
     """Toggle a device on or off. If on, turns off. If off, turns on at full brightness."""
-    return _get("/api/toggle", {"id": id})
+    return _post("/api/toggle", {"id": id})
 
 
 @mcp.tool()
@@ -143,25 +159,40 @@ def set_name(id: str, name: str) -> dict:
 @mcp.tool()
 def remove_name(id: str, name: str) -> dict:
     """Remove an alias from a device."""
-    return _get("/api/name/remove", {"id": id, "name": name})
+    return _post("/api/name/remove", {"id": id, "name": name})
 
 
 @mcp.tool()
 def add_bridge(ip: str, port: int, api_key: str | None = None) -> dict:
-    """Register a remote logical bridge by IP and port. Optional api_key for authenticated peers."""
-    return _get("/api/bridge", {"ip": ip, "port": str(port), "api_key": api_key})
+    """Register a remote logical bridge by IP and port. Optional api_key for authenticated peers
+    (sent in the request body, never the URL)."""
+    return _post("/api/bridge", {"ip": ip, "port": port, "api_key": api_key})
 
 
 @mcp.tool()
 def remove_bridge(ip: str, port: int) -> dict:
     """Remove a registered logical bridge."""
-    return _get("/api/bridge/remove", {"ip": ip, "port": str(port)})
+    return _post("/api/bridge/remove", {"ip": ip, "port": port})
 
 
 @mcp.tool()
 def register_device(code: str, ip: str | None = None, name: str | None = None) -> dict:
-    """Commission a new Matter device using its pairing code. Optionally specify IP and a name."""
-    return _get("/api/register", {"code": code, "ip": ip, "name": name})
+    """Commission a new Matter device using its pairing code (sent in the body, never
+    the URL). Optionally specify IP and a name."""
+    return _post("/api/register", {"code": code, "ip": ip, "name": name})
+
+
+@mcp.tool()
+def unregister_node(node_id: int) -> dict:
+    """Unpair a fabric node by node_id (clean up phantom/duplicate entries)."""
+    return _post("/api/unregister", {"node_id": node_id})
+
+
+@mcp.tool()
+def get_metadata() -> dict:
+    """Declarative bridge metadata (capabilities + states per device), as consumed
+    by federation peers. HTTP-only on the REST side (/api/metadata)."""
+    return _get("/api/metadata")
 
 
 @mcp.tool()
@@ -178,20 +209,24 @@ def get_ac(id: str) -> dict:
 
 @mcp.tool()
 def set_ac(id: str, on: bool | None = None, mode: int | None = None,
-           setpoint: float | None = None) -> dict:
+           setpoint: float | None = None, fan_speed: int | None = None) -> dict:
     """Control an AC.
 
     - on=True turns on (resumes last non-zero SystemMode, defaulting to Cool=3); on=False turns off.
-    - mode (overrides on): 0=Off, 1=Auto, 3=Cool, 4=Heat, 7=FanOnly, 8=Dry.
-    - setpoint: cooling setpoint in °C (e.g. 26.0).
+    - mode (overrides on): 0=Off, 1=Auto, 3=Cool, 4=Heat, 5=EmergencyHeat, 6=Precooling,
+      7=FanOnly, 8=Dry, 9=Sleep.
+    - setpoint: in °C (e.g. 26.0); routed to the heating or cooling setpoint by mode.
+    - fan_speed (0-100): forwarded to logical-bridge ACs that support it; rejected on
+      physical Matter ACs.
     """
-    return _post("/api/ac", {"id": id, "on": on, "mode": mode, "setpoint": setpoint})
+    return _post("/api/ac", {"id": id, "on": on, "mode": mode,
+                             "setpoint": setpoint, "fan_speed": fan_speed})
 
 
 @mcp.tool()
 def refresh() -> dict:
     """Force refresh all device states from Matter bridge and logical bridges."""
-    return _get("/api/refresh")
+    return _post("/api/refresh", {})
 
 
 # ---------------------------------------------------------------------------
@@ -227,15 +262,29 @@ def main():
     except AttributeError:
         logging.warning("FastMCP.settings unavailable; relying on transport defaults.")
 
-    # Relax DNS-rebinding protection so the LAN bind actually accepts requests
-    # whose Host header isn't 127.0.0.1.
+    # Keep DNS-rebinding protection ON, but allow the bind host (+ loopback) so
+    # the LAN bind actually accepts legitimate requests (S5).
     try:
         from mcp.server.transport_security import TransportSecuritySettings
+
+        allowed_hosts: list[str] = []
+        for h in {args.mcp_host, "127.0.0.1", "localhost"}:
+            allowed_hosts.extend([h, f"{h}:*"])
+        if args.mcp_host == "0.0.0.0":
+            import socket
+            hostname = socket.gethostname()
+            allowed_hosts.extend([hostname, f"{hostname}:*"])
+            logging.warning(
+                "Binding MCP to 0.0.0.0 — allowed Host headers are %s. LAN clients "
+                "using another name/IP will be rejected; add it to allowed_hosts.",
+                sorted(set(allowed_hosts)),
+            )
         mcp.settings.transport_security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=False
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=sorted(set(allowed_hosts)),
         )
     except Exception as e:  # pragma: no cover
-        logging.warning(f"Could not relax transport_security ({e}); "
+        logging.warning(f"Could not configure transport_security ({e}); "
                         f"requests may be rejected with 'Invalid Host header'.")
 
     transport_name = "streamable-http" if args.transport == "http" else "sse"

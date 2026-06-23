@@ -36,19 +36,20 @@ check "good key → 200" '"lights_on"' "$(curl_a $A_URL/api/status)"
 echo "== A standalone =="
 check "A devices contain dev_aaaa0001" 'dev_aaaa0001' "$(curl_a $A_URL/api/devices)"
 check "A status: 1 light on, 1 off" '"lights_on":1' "$(curl_a $A_URL/api/status)"
-check "A toggle dev_aaaa0001 → off" '"success"' "$(curl_a "$A_URL/api/toggle?id=dev_aaaa0001")"
+check "A toggle dev_aaaa0001 → off" '"success"' "$(curl_a -X POST -H 'Content-Type: application/json' -d '{"id":"dev_aaaa0001"}' $A_URL/api/toggle)"
 check "A status: 0 lights on" '"lights_on":0' "$(curl_a $A_URL/api/status)"
 check "A set_mired clamp 100 → 153" '"mireds":153' "$(curl_a -X POST -H 'Content-Type: application/json' -d '{"id":"dev_aaaa0002","mireds":100}' $A_URL/api/mired)"
 check "A set_mired clamp 999 → 500" '"mireds":500' "$(curl_a -X POST -H 'Content-Type: application/json' -d '{"id":"dev_aaaa0002","mireds":999}' $A_URL/api/mired)"
 check "A unknown device → 404" 'not found' "$(curl_a "$A_URL/api/level?id=dev_zzzz")"
 
 echo "== federation A → B =="
-check "A registers B as logical bridge" '"success"' "$(curl_a "$A_URL/api/bridge?ip=127.0.0.1&port=$B_PORT&api_key=$B_KEY")"
+bridge_body="{\"ip\":\"127.0.0.1\",\"port\":$B_PORT,\"api_key\":\"$B_KEY\"}"
+check "A registers B as logical bridge" '"success"' "$(curl_a -X POST -H 'Content-Type: application/json' -d "$bridge_body" $A_URL/api/bridge)"
 check "A now sees B's dev_bbbb0001" 'dev_bbbb0001' "$(curl_a $A_URL/api/devices)"
 check "A controls B's light via /api/set" '"type":"logical"' "$(curl_a -X POST -H 'Content-Type: application/json' -d '{"id":"dev_bbbb0001","brightness":0.5}' $A_URL/api/set)"
 
 before=$(curl_b $B_URL/api/lights)
-check "B reflects level change from A" '"brightness":0.5' "$(curl_b $B_URL/api/refresh; curl_a "$A_URL/api/refresh"; curl_b $B_URL/api/lights)"
+check "B reflects level change from A" '"brightness":0.5' "$(curl_b -X POST $B_URL/api/refresh; curl_a -X POST "$A_URL/api/refresh"; curl_b $B_URL/api/lights)"
 
 check "A status dedups (federation loop safe)" '"total_devices":' "$(curl_a $A_URL/api/status)"
 

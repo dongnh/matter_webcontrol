@@ -9,48 +9,32 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
 
-from cli import paths
+from cli import __version__, auth, paths
 from cli.core import DeviceController
 from cli.logic_bridge import LogicalBridgeManager
 from cli.matter_bridge import MatterBridgeServer
+from cli.schemas import (
+    ACPayload,
+    BatchPayload,
+    BridgePayload,
+    BridgeRemovePayload,
+    ControlPayload,
+    LevelPayload,
+    MiredPayload,
+    NamePayload,
+    NameRemovePayload,
+    RegisterPayload,
+    TogglePayload,
+    UnregisterPayload,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Unauthenticated read-only endpoints (liveness + version).
+PUBLIC_PATHS = {"/health", "/version"}
+
 controller: Optional[DeviceController] = None
-
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-
-class NamePayload(BaseModel):
-    id: str
-    name: str
-
-class ControlPayload(BaseModel):
-    id: str
-    brightness: Optional[float] = None
-    temperature: Optional[int] = None
-
-class LevelPayload(BaseModel):
-    id: str
-    level: Optional[int] = None
-
-class MiredPayload(BaseModel):
-    id: str
-    mireds: Optional[int] = None
-
-class BatchPayload(BaseModel):
-    actions: list[dict]
-
-class ACPayload(BaseModel):
-    id: str
-    on: Optional[bool] = None
-    mode: Optional[int] = None
-    system_mode: Optional[int] = None
-    setpoint: Optional[float] = None
-    fan_speed: Optional[int] = None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,6 +44,16 @@ def _get_params(request: Request, payload, fields: list[str]) -> dict:
     if request.method == "POST" and payload:
         return {f: getattr(payload, f, None) for f in fields}
     return {f: request.query_params.get(f) for f in fields}
+
+
+def _coerce(value, caster):
+    """Coerce a query-string value, turning a bad value into 400 (not 500)."""
+    if value is None or isinstance(value, caster):
+        return value
+    try:
+        return caster(value)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"Invalid parameter value: {value!r}")
 
 
 def _wrap(fn, *args, status=400, **kwargs):
@@ -104,6 +98,8 @@ async def lifespan(app: FastAPI):
     await bridge.initialize(app, fabric_label=fabric_label)
 
     logical = LogicalBridgeManager()
+    logical.local_host = getattr(app.state, "host", "127.0.0.1")
+    logical.local_port = port
     logical.load_cache()
 
     controller = DeviceController(bridge, logical)
@@ -127,9 +123,10 @@ app = FastAPI(title="Matter Web Controller", lifespan=lifespan)
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    api_key = getattr(app.state, "api_key", None)
-    if api_key and request.headers.get("X-API-Key") != api_key:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if request.url.path not in PUBLIC_PATHS:
+        api_key = getattr(app.state, "api_key", None)
+        if not auth.check_api_key(request.headers.get("X-API-Key"), api_key):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
     return await call_next(request)
 
 # ---------------------------------------------------------------------------
@@ -168,43 +165,46 @@ async def get_status_api():
     return controller.get_status()
 
 
-@app.get("/api/toggle")
-async def toggle_api(id: str):
-    return await _wrap_async(controller.toggle(id))
+@app.post("/api/toggle")
+async def toggle_api(payload: TogglePayload):
+    return await _wrap_async(controller.toggle(payload.id))
 
 
-@app.api_route("/api/name", methods=["GET", "POST"])
-async def set_name_api(request: Request, payload: Optional[NamePayload] = None):
-    params = _get_params(request, payload, ["id", "name"])
-    if not params["id"] or not params["name"]:
-        raise HTTPException(status_code=400, detail="Missing id or name parameter")
-    return _wrap(controller.set_name, params["id"], params["name"], status=409)
+@app.post("/api/name")
+async def set_name_api(payload: NamePayload):
+    return _wrap(controller.set_name, payload.id, payload.name, status=409)
 
 
-@app.get("/api/name/remove")
-async def remove_name_api(id: str, name: str):
-    return _wrap(controller.remove_name, id, name)
+@app.post("/api/name/remove")
+async def remove_name_api(payload: NameRemovePayload):
+    return _wrap(controller.remove_name, payload.id, payload.name)
 
 
-@app.get("/api/bridge")
-async def add_bridge_api(ip: str, port: int, api_key: Optional[str] = None):
-    # add_bridge does a blocking federation fetch — offload off the event loop.
-    return await _wrap_async(asyncio.to_thread(controller.add_bridge, ip, port, api_key))
+@app.post("/api/bridge")
+async def add_bridge_api(payload: BridgePayload):
+    # api_key arrives in the JSON body, never the URL (S1). add_bridge does a
+    # blocking federation fetch — offload off the event loop.
+    return await _wrap_async(
+        asyncio.to_thread(controller.add_bridge, payload.ip, payload.port, payload.api_key)
+    )
 
 
-@app.get("/api/bridge/remove")
-async def remove_bridge_api(ip: str, port: int):
-    return _wrap(controller.remove_bridge, ip, port)
+@app.post("/api/bridge/remove")
+async def remove_bridge_api(payload: BridgeRemovePayload):
+    return _wrap(controller.remove_bridge, payload.ip, payload.port)
 
 
-@app.get("/api/register")
-async def register_api(code: str, ip: Optional[str] = None, name: Optional[str] = None):
-    return await _wrap_async(controller.register_device(code, ip, name))
+@app.post("/api/register")
+async def register_api(payload: RegisterPayload):
+    # pairing code in the body, never the URL (S3).
+    return await _wrap_async(
+        controller.register_device(payload.code, payload.ip, payload.name)
+    )
 
 
-@app.get("/api/unregister")
-async def unregister_api(node_id: int):
-    return await _wrap_async(controller.unregister_node(node_id))
+@app.post("/api/unregister")
+async def unregister_api(payload: UnregisterPayload):
+    return await _wrap_async(controller.unregister_node(payload.node_id))
 
 
 @app.api_route("/api/set", methods=["GET", "POST"])
@@ -213,8 +213,8 @@ async def set_device_api(request: Request, payload: Optional[ControlPayload] = N
     if not params["id"]:
         raise HTTPException(status_code=400, detail="Missing device id")
 
-    brightness = float(params["brightness"]) if params["brightness"] is not None else None
-    temperature = int(params["temperature"]) if params["temperature"] is not None else None
+    brightness = _coerce(params["brightness"], float)
+    temperature = _coerce(params["temperature"], int)
 
     return await _wrap_async(controller.set_device(params["id"], brightness, temperature))
 
@@ -233,7 +233,7 @@ async def level_api(request: Request, payload: Optional[LevelPayload] = None):
     if params["level"] is None:
         return _wrap(controller.get_level, params["id"])
 
-    return await _wrap_async(controller.set_level(params["id"], int(params["level"])))
+    return await _wrap_async(controller.set_level(params["id"], _coerce(params["level"], int)))
 
 
 @app.api_route("/api/mired", methods=["GET", "POST"])
@@ -245,7 +245,7 @@ async def mired_api(request: Request, payload: Optional[MiredPayload] = None):
     if params["mireds"] is None:
         return _wrap(controller.get_mired, params["id"])
 
-    return await _wrap_async(controller.set_mired(params["id"], int(params["mireds"])))
+    return await _wrap_async(controller.set_mired(params["id"], _coerce(params["mireds"], int)))
 
 
 @app.get("/api/subscribe")
@@ -297,15 +297,16 @@ async def ac_api(request: Request, payload: Optional[ACPayload] = None):
         return bool(v)
 
     on = parse_bool(params["on"])
+    # system_mode is the documented alias; mode is canonical (API4).
     mode_raw = params["system_mode"] if params["system_mode"] is not None else params["mode"]
-    mode = int(mode_raw) if mode_raw is not None else None
-    setpoint = float(params["setpoint"]) if params["setpoint"] is not None else None
-    fan_speed = int(params["fan_speed"]) if params["fan_speed"] is not None else None
+    mode = _coerce(mode_raw, int)
+    setpoint = _coerce(params["setpoint"], float)
+    fan_speed = _coerce(params["fan_speed"], int)
 
     return await _wrap_async(controller.set_ac(params["id"], on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed))
 
 
-@app.get("/api/refresh")
+@app.post("/api/refresh")
 async def refresh_api():
     # refresh fans out blocking federation HTTP — offload off the event loop.
     return await _wrap_async(asyncio.to_thread(controller.refresh))
@@ -316,6 +317,19 @@ async def metadata_api(request: Request):
     host = request.url.hostname or "127.0.0.1"
     port = request.url.port or 8080
     return controller.get_metadata(host, port)
+
+
+# -- Unauthenticated liveness + version (PUBLIC_PATHS) ----------------------
+
+@app.get("/health")
+async def health_api():
+    ready = bool(controller and controller.bridge and controller.bridge.is_ready())
+    return {"status": "ok" if ready else "starting", "bridge_ready": ready}
+
+
+@app.get("/version")
+async def version_api():
+    return {"version": __version__}
 
 
 # ---------------------------------------------------------------------------
@@ -333,19 +347,18 @@ def main():
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Directory for caches + Matter fabric storage "
                              "(or set MATTER_DATA_DIR; defaults to the current directory)")
+    parser.add_argument("--insecure", action="store_true",
+                        help="Allow binding to a non-loopback host without an API key")
     args = parser.parse_args()
 
     data_dir = paths.set_data_dir(args.data_dir)
     logging.info("Data directory: %s", data_dir)
     logging.info("Matter fabric storage: %s", paths.matter_storage())
 
-    if args.host != "127.0.0.1" and not args.api_key:
-        logging.warning(
-            "Server bound to %s without --api-key. Anyone on the network can control "
-            "your devices and commission new ones. Set MATTER_SRV_KEY or pass --api-key.",
-            args.host,
-        )
+    # Refuse an unauthenticated non-loopback bind unless explicitly overridden (S8).
+    auth.require_secure_bind(args.host, args.api_key, args.insecure)
 
+    app.state.host = args.host
     app.state.port = args.port
     app.state.fabric_label = args.fabric
     app.state.api_key = args.api_key

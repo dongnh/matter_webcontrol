@@ -59,7 +59,7 @@ async def test_status_light_counts(client):
 
 @pytest.mark.asyncio
 async def test_toggle_then_status(client):
-    resp = await client.get("/api/toggle", params={"id": "dev_aaaa0001"})
+    resp = await client.post("/api/toggle", json={"id": "dev_aaaa0001"})
     assert resp.json()["status"] == "success"
     body = (await client.get("/api/status")).json()
     assert body["lights_on"] == 0
