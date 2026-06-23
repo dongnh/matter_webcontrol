@@ -110,8 +110,11 @@ async def lifespan(app: FastAPI):
     if bridge.is_ready():
         bridge._update_cache()
 
-    count = logical.refresh_bridges()
-    logging.info(f"Startup sync complete. Refreshed Matter cache and {count} logical bridges.")
+    result = logical.refresh_bridges()
+    logging.info(
+        "Startup sync complete. Refreshed Matter cache and %d logical bridges (%d failed).",
+        result["refreshed"], result["failed"],
+    )
 
     yield
 
@@ -184,7 +187,8 @@ async def remove_name_api(id: str, name: str):
 
 @app.get("/api/bridge")
 async def add_bridge_api(ip: str, port: int, api_key: Optional[str] = None):
-    return _wrap(controller.add_bridge, ip, port, api_key)
+    # add_bridge does a blocking federation fetch — offload off the event loop.
+    return await _wrap_async(asyncio.to_thread(controller.add_bridge, ip, port, api_key))
 
 
 @app.get("/api/bridge/remove")
@@ -307,7 +311,8 @@ async def ac_api(request: Request, payload: Optional[ACPayload] = None):
 
 @app.get("/api/refresh")
 async def refresh_api():
-    return _wrap(controller.refresh)
+    # refresh fans out blocking federation HTTP — offload off the event loop.
+    return await _wrap_async(asyncio.to_thread(controller.refresh))
 
 
 @app.get("/api/metadata")

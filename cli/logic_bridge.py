@@ -4,7 +4,9 @@ Each remote bridge exposes the same REST API as the local server. This module
 calls those endpoints directly — no embedded scripts, no code execution.
 """
 
+import concurrent.futures
 import json
+import logging
 import os
 import urllib.error
 import urllib.parse
@@ -151,15 +153,31 @@ class LogicalBridgeManager:
         self._save_cache()
         return node_id
 
-    def refresh_bridges(self) -> int:
-        count = 0
-        for client in self.registry.values():
-            try:
-                client.refresh()
-                count += 1
-            except Exception:
-                pass  # skip unreachable bridges
-        return count
+    def refresh_bridges(self) -> Dict[str, int]:
+        """Refresh every registered bridge concurrently.
+
+        Returns {"refreshed": n, "failed": m}. Each failure is logged with its
+        node id; one slow/unreachable peer no longer serializes the others.
+        """
+        items = list(self.registry.items())
+        if not items:
+            return {"refreshed": 0, "failed": 0}
+
+        refreshed = 0
+        failed = 0
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(items))
+        ) as ex:
+            futures = {ex.submit(c.refresh): nid for nid, c in items}
+            for fut in concurrent.futures.as_completed(futures):
+                nid = futures[fut]
+                try:
+                    fut.result()
+                    refreshed += 1
+                except Exception as e:
+                    failed += 1
+                    logging.warning("Logical bridge %s refresh failed: %s", nid, e)
+        return {"refreshed": refreshed, "failed": failed}
 
     def get_all_devices(self) -> Dict[str, Any]:
         """Return cached device list across all bridges (no HTTP per call)."""

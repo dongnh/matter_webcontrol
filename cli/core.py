@@ -306,10 +306,12 @@ class DeviceController:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
             if brightness is not None:
-                client.set_brightness(target["id"], max(0.0, min(1.0, brightness)))
+                await asyncio.to_thread(
+                    client.set_brightness, target["id"], max(0.0, min(1.0, brightness))
+                )
             if temperature is not None and temperature > 0:
                 mireds = max(MIRED_MIN, min(MIRED_MAX, int(1_000_000 / temperature)))
-                client.set_mired(target["id"], mireds)
+                await asyncio.to_thread(client.set_mired, target["id"], mireds)
             return {"status": "success", "id": resolved, "type": "logical"}
 
         # Physical device
@@ -358,7 +360,7 @@ class DeviceController:
         if target:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
-            client.set_level(target["id"], level)
+            await asyncio.to_thread(client.set_level, target["id"], level)
             return {"status": "success", "id": resolved, "level": level, "type": "logical"}
 
         self._verify_hardware()
@@ -379,7 +381,7 @@ class DeviceController:
         if target:
             if not client:
                 raise RuntimeError("Logical bridge client offline")
-            client.set_mired(target["id"], mireds)
+            await asyncio.to_thread(client.set_mired, target["id"], mireds)
             return {"status": "success", "id": resolved, "mireds": mireds, "type": "logical"}
 
         self._verify_hardware()
@@ -499,11 +501,12 @@ class DeviceController:
         if log_dev and client and self._is_ac(log_dev.get("states", {})):
             if mode is not None and int(mode) not in THERMO_VALID_MODES:
                 raise ValueError(f"Invalid SystemMode {mode}; valid: {sorted(THERMO_VALID_MODES)}")
-            client.set_ac(
-                resolved, on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed
+            await asyncio.to_thread(
+                client.set_ac,
+                resolved, on=on, mode=mode, setpoint=setpoint, fan_speed=fan_speed,
             )
             try:
-                client.refresh()
+                await asyncio.to_thread(client.refresh)
             except Exception:
                 pass
             wrote = {}
@@ -627,8 +630,17 @@ class DeviceController:
                 logging.error(f"Matter bridge refresh error: {e}")
                 matter_status = "failed"
 
-        count = self.logical.refresh_bridges()
-        return {"status": "success", "message": f"Refreshed {count} logical bridges. Matter: {matter_status}"}
+        result = self.logical.refresh_bridges()
+        return {
+            "status": "success",
+            "message": (
+                f"Refreshed {result['refreshed']} logical bridges "
+                f"({result['failed']} failed). Matter: {matter_status}"
+            ),
+            "refreshed": result["refreshed"],
+            "failed": result["failed"],
+            "matter": matter_status,
+        }
 
     def get_metadata(self, host: str, port: int) -> dict:
         """Declarative bridge metadata for federation discovery.
