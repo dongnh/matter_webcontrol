@@ -4,21 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matter-web-controller"
-version = "0.27.0"
-description = "Using websocket matter server to query/control matter-enabled lights/sensors via a HTTP GET interface."
+version = "0.28.0"
+description = "Control Matter smart-home devices and federate remote instances over a REST + MCP API."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi",
-    "uvicorn",
-    "pydantic",
-    "aiohttp",
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.27,<1",
+    "pydantic>=2,<3",
+    "aiohttp>=3.9,<4",
     "home-assistant-chip-core",
     "home-assistant-chip-clusters",
-    "cryptography",    
-    "python-matter-server",
+    "cryptography",
+    "python-matter-server>=7,<9",
     "zeroconf",
-    "mcp[cli]",
+    "mcp[cli]>=1,<2",
 ]
 
 [project.optional-dependencies]
