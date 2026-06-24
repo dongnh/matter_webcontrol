@@ -95,6 +95,10 @@ async def _wrap_async(coro, status=400):
 # Lifespan
 # ---------------------------------------------------------------------------
 
+# How often (seconds) to re-poll logical bridges so their online/offline state
+# stays current after the startup heal window closes.
+LOGICAL_HEALTH_INTERVAL = 30
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -160,11 +164,25 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     pass  # still offline; retry next round
 
+    # Keep logical-bridge reachability fresh. The heal loop above only re-adds
+    # *missing* bridges and stops after ~20 min; without this, a logical bridge
+    # that drops after startup would never flip to offline. Most lights here are
+    # logical (Casambi/Yeelight), so this poll is their primary `online` signal.
+    async def _poll_logical_health():
+        while True:
+            await asyncio.sleep(LOGICAL_HEALTH_INTERVAL)
+            try:
+                await asyncio.to_thread(logical.refresh_bridges)
+            except Exception as e:  # never let the poll kill the loop
+                logging.debug("logical health poll failed: %s", e)
+
     heal_task = asyncio.create_task(_heal_logical_bridges())
+    health_task = asyncio.create_task(_poll_logical_health())
 
     yield
 
     heal_task.cancel()
+    health_task.cancel()
 
     await bridge.shutdown(app)
 

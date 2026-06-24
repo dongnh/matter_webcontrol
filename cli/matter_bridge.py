@@ -211,6 +211,12 @@ class MatterBridgeServer:
         self._run_id_migration_once(self.cached_devices)
 
         self.client.subscribe_events(self._on_event, EventType.ATTRIBUTE_UPDATED)
+        # A node going online/offline arrives as NODE_UPDATED (its `available`
+        # flag flips), not ATTRIBUTE_UPDATED — subscribe to both so the cached
+        # `online` flag stays fresh. Guarded so an older library still imports.
+        node_updated = getattr(EventType, "NODE_UPDATED", None)
+        if node_updated is not None:
+            self.client.subscribe_events(self._on_event, node_updated)
 
         if fabric_label:
             try:
@@ -433,6 +439,10 @@ class MatterBridgeServer:
         occupancy_updated = False
 
         for node in self.client.get_nodes():
+            # python-matter-server marks a node unavailable when it stops
+            # responding (subscription lost / offline). Default to online if the
+            # attribute is missing so a library change never raises false alarms.
+            node_online = bool(getattr(node, "available", True))
             for ep_id, endpoint in node.endpoints.items():
                 device_id, unique_id = self._get_stable_id(node, ep_id)
                 states: dict[str, Any] = {}
@@ -508,6 +518,7 @@ class MatterBridgeServer:
                         "node_id": node.node_id,
                         "endpoint_id": ep_id,
                         "unique_id": unique_id,
+                        "online": node_online,
                         "states": states,
                     }
                 )

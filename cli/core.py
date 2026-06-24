@@ -189,9 +189,15 @@ class DeviceController:
         acs_on = 0
         acs_off = 0
         total = 0
+        devices_online = 0
+        devices_offline = 0
 
         for dev, _names, _origin in self._iter_devices():
             total += 1
+            if dev.get("online", True):
+                devices_online += 1
+            else:
+                devices_offline += 1
             states = dev.get("states", {})
             if "on_off" in states or "brightness_raw" in states:
                 if states.get("on_off"):
@@ -214,6 +220,8 @@ class DeviceController:
             "acs_off": acs_off,
             "logical_bridges": len(self.logical.registry),
             "total_devices": total,
+            "devices_online": devices_online,
+            "devices_offline": devices_offline,
         }
 
     # -- Control -------------------------------------------------------------

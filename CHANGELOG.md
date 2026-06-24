@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.29.0 — device online/offline status
+
+### New Features
+
+- **Per-device `online` flag.** Every device now reports reachability:
+  - Physical Matter devices read `node.available` from python-matter-server,
+    refreshed on `NODE_UPDATED` events (a node going offline arrives there, not
+    as an attribute update).
+  - Logical-bridge devices are `online` only when their bridge is currently
+    reachable (`LogicalBridgeClient.reachable`, set on each `refresh()`); a
+    bridge that drops marks all of its devices offline despite the stale cache.
+  - Surfaced on `GET /api/metadata`, `/api/devices`, and `/api/lights`, plus
+    `devices_online`/`devices_offline` counts on `GET /api/status`.
+- **Periodic logical health poll** (`LOGICAL_HEALTH_INTERVAL`, 30s). The startup
+  heal loop only re-adds *missing* bridges and stops after ~20 min, so a logical
+  bridge that dropped afterward would never flip offline. This poll keeps
+  reachability current — the primary `online` signal for Casambi/Yeelight lights.
+
 ## v0.28.0 — risk-first restructure
 
 ### Breaking Changes

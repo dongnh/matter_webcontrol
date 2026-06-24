@@ -42,13 +42,13 @@ Requires Python 3.12+. The Matter WebSocket binds to the REST port + 1.
 Errors map cleanly: `404` unknown device, `400` bad params, `401` auth, `405` a POST-only endpoint called with GET, `503` Matter bridge offline, `500` other.
 
 **Read** (GET)
-- `/api/status` — counts: lights on/off, sensors active, ACs on/off, bridges, total devices
-- `/api/devices` — raw states for every device
-- `/api/lights` — normalized brightness 0–1 and Kelvin; brightness is kept even when off, `state` carries on/off
+- `/api/status` — counts: lights on/off, sensors active, ACs on/off, bridges, total devices, plus `devices_online`/`devices_offline`
+- `/api/devices` — raw states for every device, each with an `online` flag
+- `/api/lights` — normalized brightness 0–1 and Kelvin; brightness is kept even when off, `state` carries on/off, `online` reports reachability
 - `/api/sensors`, `/api/sensor?id` — all sensors, or one
 - `/api/climate[?id]` — temperature (°C) and humidity (%)
 - `/api/level?id`, `/api/mired?id` — read raw brightness (0–254) or color temperature (mireds)
-- `/api/metadata` — declarative capabilities, used by federation peers
+- `/api/metadata` — declarative capabilities (plus `online`), used by federation peers
 - `/health`, `/version` — unauthenticated
 
 **Control** (POST)

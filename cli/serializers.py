@@ -29,6 +29,7 @@ def build_light(device: dict, names: list) -> dict | None:
     entry = {
         "id": device["id"],
         "names": names,
+        "online": bool(device.get("online", True)),
         "state": states.get("on_off"),
         "brightness": conv.normalize_brightness(states.get("brightness_raw")),
     }
@@ -140,5 +141,6 @@ def build_metadata(device: dict, names: list) -> dict | None:
         "names": names,
         "hardware_type": hw_type,
         "capabilities": capabilities,
+        "online": bool(device.get("online", True)),
         "states": states,
     }

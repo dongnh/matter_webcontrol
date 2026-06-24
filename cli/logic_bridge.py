@@ -26,6 +26,10 @@ class LogicalBridgeClient:
         self.api_key = api_key
         self.base_url = f"http://{host}:{port}"
         self.devices: Dict[str, Dict[str, Any]] = {}
+        # True after the most recent refresh() reached the remote. A bridge that
+        # falls offline keeps its last device list (stale), so callers gate
+        # per-device `online` on this flag rather than trusting the cache.
+        self.reachable: bool = False
 
     def _request(
         self,
@@ -68,8 +72,13 @@ class LogicalBridgeClient:
 
     def refresh(self) -> None:
         """Pull device list from the remote and cache it locally."""
-        data = self._request("/api/devices")
+        try:
+            data = self._request("/api/devices")
+        except Exception:
+            self.reachable = False
+            raise
         self.devices = {dev["id"]: dev for dev in data if "id" in dev}
+        self.reachable = True
 
     def set_level(self, device_id: str, level: int) -> None:
         self._request(
@@ -284,6 +293,10 @@ class LogicalBridgeManager:
                         "endpoint_id": dev.get("endpoint_id"),
                         "states": dev.get("states", {}),
                         "names": dev.get("names", []),
+                        # Offline if its bridge is unreachable; otherwise honour
+                        # any `online` the remote itself reported (federated
+                        # matter_webcontrol peers now carry it), default online.
+                        "online": bool(client.reachable and dev.get("online", True)),
                     }
                 )
         return {"total_devices": len(aggregated), "devices": aggregated}
